@@ -1,0 +1,91 @@
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authorization;
+using System.Security.Claims;
+
+[Authorize(Roles = "Teacher,Student")]
+[ApiController]
+[Route("api/students")]
+public class StudentsController : ControllerBase
+{
+    private readonly AppDbContext _context;
+
+    public StudentsController(AppDbContext context)
+    {
+        _context = context;
+    }
+
+    [Authorize(Roles = "Teacher")]
+    [HttpGet]
+    public async Task<ActionResult<List<StudentResponse>>> GetStudents()
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!Guid.TryParse(userId, out Guid currentUserId))
+        {
+            return Unauthorized();
+        }
+
+        var students = await _context.Students
+            .AsNoTracking()
+            .Where(s =>
+                s.Teacher != null &&
+                s.Teacher.UserId == currentUserId)
+            .ToListAsync();
+
+        var response = new List<StudentResponse>();
+
+        foreach (var student in students)
+        {
+            response.Add(StudentResponse.FromStudent(student));
+        }
+
+        return Ok(response);
+    }
+
+    [HttpGet("{id}")]
+    public async Task<ActionResult<StudentResponse>> GetStudent(int id)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!Guid.TryParse(userId, out Guid currentUserId))
+        {
+            return Unauthorized();
+        }
+
+        var student = await _context.Students
+            .AsNoTracking()
+            .SingleOrDefaultAsync(s => s.Id == id);
+
+        if (student is null)
+        {
+            return NotFound();
+        }
+
+        if (User.IsInRole("Teacher"))
+        {
+            bool isAssignedTeacher = await _context.Teachers
+                .AnyAsync(t =>
+                    t.Id == student.TeacherId &&
+                    t.UserId == currentUserId);
+
+            if (!isAssignedTeacher)
+            {
+                return Forbid();
+            }
+        }
+        else if (User.IsInRole("Student"))
+        {
+            if (student.UserId != currentUserId)
+            {
+                return Forbid();
+            }
+        }
+        else
+        {
+            return Forbid();
+        }
+
+        return Ok(StudentResponse.FromStudent(student));
+    }
+}

@@ -1,0 +1,144 @@
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authorization;
+using System.Security.Claims;
+
+[Authorize(Roles = "Teacher,Student")]
+[ApiController]
+[Route("api/feed-posts")]
+public class FeedPostsController : ControllerBase
+{
+    private readonly AppDbContext _context;
+
+    public FeedPostsController(AppDbContext context)
+    {
+        _context = context;
+    }
+
+    // GET /api/feed-posts
+    [HttpGet]
+    public async Task<ActionResult<List<FeedPostResponse>>> GetPosts(
+        CancellationToken cancellationToken)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!Guid.TryParse(userId, out Guid currentUserId))
+            return Unauthorized();
+
+        var posts = await GetAccessiblePosts(currentUserId)
+            .OrderByDescending(p => p.CreatedAt)
+            .ToListAsync(cancellationToken);
+
+        var response = posts
+            .Select(FeedPostResponse.FromFeedPost)
+            .ToList();
+
+        return Ok(response);
+    }
+
+    // GET /api/feed-posts/{id}
+    [HttpGet("{id:int}")]
+    public async Task<ActionResult<FeedPostResponse>> GetPost(
+        int id,
+        CancellationToken cancellationToken)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!Guid.TryParse(userId, out Guid currentUserId))
+            return Unauthorized();
+
+        var post = await GetAccessiblePosts(currentUserId)
+            .SingleOrDefaultAsync(
+                p => p.Id == id,
+                cancellationToken);
+
+        if (post is null)
+            return NotFound();
+
+        return Ok(FeedPostResponse.FromFeedPost(post));
+    }
+
+    // POST /api/feed-posts
+    [Authorize(Roles = "Teacher")]
+    [HttpPost]
+    public async Task<ActionResult<FeedPostResponse>> CreatePost(
+        [FromBody] FeedPostAddRequest request,
+        CancellationToken cancellationToken)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!Guid.TryParse(userId, out Guid currentUserId))
+            return Unauthorized();
+
+        var teacher = await _context.Teachers
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                t => t.UserId == currentUserId,
+                cancellationToken);
+
+        if (teacher is null)
+            return Forbid();
+
+        var post = FeedPostAddRequest.ToFeedPost(
+            request,
+            teacher.Id);
+
+        _context.FeedPosts.Add(post);
+
+        await _context.SaveChangesAsync(cancellationToken);
+
+        return CreatedAtAction(
+            nameof(GetPost),
+            new { id = post.Id },
+            FeedPostResponse.FromFeedPost(post));
+    }
+
+    // DELETE /api/feed-posts/{id}
+    [Authorize(Roles = "Teacher")]
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> DeletePost(
+        int id,
+        CancellationToken cancellationToken)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!Guid.TryParse(userId, out Guid currentUserId))
+            return Unauthorized();
+
+        var post = await _context.FeedPosts
+            .SingleOrDefaultAsync(
+                p => p.Id == id &&
+                     p.Teacher.UserId == currentUserId,
+                cancellationToken);
+
+        if (post is null)
+            return NotFound();
+
+        _context.FeedPosts.Remove(post);
+
+        await _context.SaveChangesAsync(cancellationToken);
+
+        return NoContent();
+    }
+
+    private IQueryable<FeedPost> GetAccessiblePosts(
+        Guid currentUserId)
+    {
+        var query = _context.FeedPosts.AsNoTracking();
+
+        if (User.IsInRole("Teacher"))
+        {
+            return query.Where(
+                p => p.Teacher.UserId == currentUserId);
+        }
+
+        if (User.IsInRole("Student"))
+        {
+            return query.Where(p =>
+                p.Teacher.Students.Any(
+                    s => s.UserId == currentUserId));
+        }
+
+        return query.Where(p => false);
+    }
+}
