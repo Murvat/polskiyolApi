@@ -1,6 +1,6 @@
 namespace PolskiYol.Features;
 
-internal static class CursorPage
+public static class CursorPage
 {
     public static void SetNextCursor<T>(
         List<T> items, int limit, Func<T, int> getId, HttpResponse response)

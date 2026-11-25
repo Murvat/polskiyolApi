@@ -13,22 +13,19 @@ public class AuthController : ControllerBase
 {
     private readonly RefreshTokenService _refreshTokenService;
     private readonly UserManager<ApplicationUser> _userManager;
-    private readonly SignInManager<ApplicationUser> _signInManager;
+    private readonly AuthenticationService _authentication;
     private readonly IJwtService _jwtService;
-    private readonly AppDbContext _context;
     private readonly ILogger<AuthController> _logger;
 
     public AuthController(
         UserManager<ApplicationUser> userManager,
-        SignInManager<ApplicationUser> signInManager,
-        AppDbContext context,
+        AuthenticationService authentication,
         IJwtService jwtService,
         RefreshTokenService refreshTokenService,
         ILogger<AuthController> logger)
     {
         _userManager = userManager;
-        _signInManager = signInManager;
-        _context = context;
+        _authentication = authentication;
         _jwtService = jwtService;
         _refreshTokenService = refreshTokenService;
         _logger = logger;
@@ -37,87 +34,19 @@ public class AuthController : ControllerBase
     [AllowAnonymous]
     [EnableRateLimiting("auth-registration")]
     [HttpPost("register/student")]
-    public async Task<IActionResult> RegisterStudent(
-        [FromBody] RegisterDto dto)
+    public async Task<IActionResult> RegisterStudent([FromBody] RegisterDto dto, CancellationToken ct)
     {
-        await using var transaction =
-            await _context.Database.BeginTransactionAsync();
-
-        var user = new ApplicationUser
-        {
-            UserName = dto.Email,
-            Email = dto.Email
-        };
-
-        IdentityResult result =
-            await _userManager.CreateAsync(user, dto.Password);
-
-        if (!result.Succeeded)
-            return BadRequest(result.Errors);
-
-        IdentityResult roleResult =
-            await _userManager.AddToRoleAsync(user, "Student");
-
-        if (!roleResult.Succeeded)
-            return BadRequest(roleResult.Errors);
-
-        var student = new Student
-        {
-            FirstName = dto.FirstName,
-            LastName = dto.LastName,
-            PhoneNumber = dto.PhoneNumber,
-            UserId = user.Id
-        };
-
-        _context.Students.Add(student);
-        await _context.SaveChangesAsync();
-
-        await transaction.CommitAsync();
-
-        return StatusCode(StatusCodes.Status201Created);
+        var result = await _authentication.RegisterAsync(dto, RegistrationRole.Student, ct);
+        return result.Succeeded ? StatusCode(StatusCodes.Status201Created) : BadRequest(result.Errors);
     }
 
     [AllowAnonymous]
     [EnableRateLimiting("auth-registration")]
     [HttpPost("register/teacher")]
-    public async Task<IActionResult> RegisterTeacher(
-        [FromBody] RegisterDto dto)
+    public async Task<IActionResult> RegisterTeacher([FromBody] RegisterDto dto, CancellationToken ct)
     {
-        await using var transaction =
-            await _context.Database.BeginTransactionAsync();
-
-        var user = new ApplicationUser
-        {
-            UserName = dto.Email,
-            Email = dto.Email
-        };
-
-        IdentityResult result =
-            await _userManager.CreateAsync(user, dto.Password);
-
-        if (!result.Succeeded)
-            return BadRequest(result.Errors);
-
-        IdentityResult roleResult =
-            await _userManager.AddToRoleAsync(user, "Teacher");
-
-        if (!roleResult.Succeeded)
-            return BadRequest(roleResult.Errors);
-
-        var teacher = new Teacher
-        {
-            FirstName = dto.FirstName,
-            LastName = dto.LastName,
-            PhoneNumber = dto.PhoneNumber,
-            UserId = user.Id
-        };
-
-        _context.Teachers.Add(teacher);
-        await _context.SaveChangesAsync();
-
-        await transaction.CommitAsync();
-
-        return StatusCode(StatusCodes.Status201Created);
+        var result = await _authentication.RegisterAsync(dto, RegistrationRole.Teacher, ct);
+        return result.Succeeded ? StatusCode(StatusCodes.Status201Created) : BadRequest(result.Errors);
     }
 
     [AllowAnonymous]
@@ -187,28 +116,14 @@ public class AuthController : ControllerBase
     {
         Response.Headers.CacheControl = "no-store";
 
-        ApplicationUser? user =
-            await _userManager.FindByEmailAsync(dto.Email);
-
+        var (user, lockedOut) = await _authentication.CheckLoginAsync(dto.Email, dto.Password);
         if (user is null)
-            return Unauthorized();
-
-        Microsoft.AspNetCore.Identity.SignInResult result =
-            await _signInManager.CheckPasswordSignInAsync(
-                user,
-                dto.Password,
-                lockoutOnFailure: true);
-
-        if (!result.Succeeded)
         {
-            if (result.IsLockedOut)
+            if (lockedOut)
                 _logger.LogWarning("Login rejected due to account lockout. TraceId {TraceId}", HttpContext.TraceIdentifier);
 
             return Unauthorized();
         }
-
-        if (await _userManager.GetTwoFactorEnabledAsync(user))
-            return Unauthorized();
 
         var roles = await _userManager.GetRolesAsync(user);
 

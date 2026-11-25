@@ -87,9 +87,7 @@ public class FeedPostsController : ControllerBase
         if (teacher is null)
             return Forbid();
 
-        var post = FeedPostAddRequest.ToFeedPost(
-            request,
-            teacher.Id);
+        var post = FeedPostService.CreatePost(request, teacher.Id, DateTime.UtcNow);
 
         _context.FeedPosts.Add(post);
 
@@ -113,11 +111,8 @@ public class FeedPostsController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        var post = await _context.FeedPosts
-            .SingleOrDefaultAsync(
-                p => p.Id == id &&
-                     p.Teacher.UserId == currentUserId,
-                cancellationToken);
+        var post = await FeedPostService.GetAccessiblePosts(currentUserId, User, _context.FeedPosts.AsTracking())
+            .SingleOrDefaultAsync(p => p.Id == id, cancellationToken);
 
         if (post is null)
             return NotFound();
@@ -129,24 +124,6 @@ public class FeedPostsController : ControllerBase
         return NoContent();
     }
 
-    private IQueryable<FeedPost> GetAccessiblePosts(
-        Guid currentUserId)
-    {
-        var query = _context.FeedPosts.AsNoTracking();
-
-        if (User.IsInRole("Teacher"))
-        {
-            return query.Where(
-                p => p.Teacher.UserId == currentUserId);
-        }
-
-        if (User.IsInRole("Student"))
-        {
-            return query.Where(p =>
-                p.Teacher.Students.Any(
-                    s => s.UserId == currentUserId));
-        }
-
-        return query.Where(p => false);
-    }
+    private IQueryable<FeedPost> GetAccessiblePosts(Guid currentUserId) =>
+        FeedPostService.GetAccessiblePosts(currentUserId, User, _context.FeedPosts.AsNoTracking());
 }

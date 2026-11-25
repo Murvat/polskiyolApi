@@ -1,5 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Identity;
+using PolskiYol.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
@@ -40,60 +40,16 @@ public class StudentsController : ControllerBase
     [HttpPut("teacher-assignment")]
     public async Task<IActionResult> AssignTeacher(
         [FromBody] StudentTeacherAssignmentRequest request,
-        [FromServices] ILookupNormalizer normalizer,
+        [FromServices] StudentAssignmentService assignment,
         CancellationToken cancellationToken)
     {
-        // Registration uses the email address as the unique Identity user name.
-        var studentUserName = normalizer.NormalizeName(request.StudentEmail);
-        var teacherUserName = normalizer.NormalizeName(request.TeacherEmail);
-
-        var studentId = await _context.Students
-            .Where(s => s.User.NormalizedUserName == studentUserName)
-            .Select(s => (int?)s.Id)
-            .SingleOrDefaultAsync(cancellationToken);
-
-        if (studentId is not int assignedStudentId)
-            return NotFound("Student profile was not found.");
-
-        var teacherId = await _context.Teachers
-            .Where(t => t.User.NormalizedUserName == teacherUserName)
-            .Select(t => (int?)t.Id)
-            .SingleOrDefaultAsync(cancellationToken);
-
-        if (teacherId is not int assignedTeacherId)
-            return NotFound("Teacher profile was not found.");
-
-        await using var transaction =
-            await _context.Database.BeginTransactionAsync(cancellationToken);
-
-        // Update first so assignment requests for the same student serialize
-        // before they check whether the conversation already exists.
-        var updated = await _context.Students
-            .Where(s => s.Id == assignedStudentId)
-            .ExecuteUpdateAsync(
-                setters => setters.SetProperty(s => s.TeacherId, (int?)assignedTeacherId),
-                cancellationToken);
-
-        if (updated == 0)
-            return NotFound("Student profile was not found.");
-
-        var conversationExists = await _context.Conversations.AnyAsync(
-            c => c.StudentId == assignedStudentId && c.TeacherId == assignedTeacherId,
-            cancellationToken);
-
-        if (!conversationExists)
+        var result = await assignment.AssignAsync(request.StudentEmail, request.TeacherEmail, cancellationToken);
+        return result switch
         {
-            _context.Conversations.Add(new Conversation
-            {
-                StudentId = assignedStudentId,
-                TeacherId = assignedTeacherId
-            });
-
-            await _context.SaveChangesAsync(cancellationToken);
-        }
-
-        await transaction.CommitAsync(cancellationToken);
-        return NoContent();
+            StudentAssignmentResult.Assigned => NoContent(),
+            StudentAssignmentResult.StudentMissing => NotFound("Student profile was not found."),
+            _ => NotFound("Teacher profile was not found.")
+        };
     }
 
     [Authorize(Roles = "Teacher")]
@@ -146,10 +102,7 @@ public class StudentsController : ControllerBase
 
         if (User.IsInRole("Teacher"))
         {
-            bool isAssignedTeacher = await _context.Teachers
-                .AnyAsync(t =>
-                    t.Id == student.TeacherId &&
-                    t.UserId == currentUserId);
+            bool isAssignedTeacher = await ProfileAccess.AssignedTeacher(_context.Teachers, student.TeacherId, currentUserId).AnyAsync();
 
             if (!isAssignedTeacher)
             {
@@ -158,7 +111,7 @@ public class StudentsController : ControllerBase
         }
         else if (User.IsInRole("Student"))
         {
-            if (student.UserId != currentUserId)
+            if (!ProfileAccess.IsOwnProfile(User, "Student", student.UserId, currentUserId))
             {
                 return Forbid();
             }

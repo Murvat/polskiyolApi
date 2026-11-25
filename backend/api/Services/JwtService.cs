@@ -10,10 +10,12 @@ namespace PolskiYol.Services;
 public sealed class JwtService : IJwtService
 {
     private readonly JwtOptions _jwtOptions;
+    private readonly TimeProvider _clock;
 
-    public JwtService(IOptions<JwtOptions> jwtOptions)
+    public JwtService(IOptions<JwtOptions> jwtOptions, TimeProvider? clock = null)
     {
         _jwtOptions = jwtOptions.Value;
+        _clock = clock ?? TimeProvider.System;
     }
 
     public AccessTokenResult? GenerateAccessToken(
@@ -21,7 +23,7 @@ public sealed class JwtService : IJwtService
         IEnumerable<string> roles,
         DateTime sessionExpiresAtUtc)
     {
-        var now = DateTime.UtcNow;
+        var now = _clock.GetUtcNow().UtcDateTime;
         var configuredExpiration = now.AddMinutes(_jwtOptions.AccessTokenExpirationMinutes);
         var deadline = configuredExpiration < sessionExpiresAtUtc ? configuredExpiration : sessionExpiresAtUtc;
 

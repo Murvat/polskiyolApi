@@ -1,3 +1,4 @@
+using PolskiYol.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
@@ -24,10 +25,7 @@ public class LessonsController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        var today = DateTime.Today;
-        var daysSinceMonday = ((int)today.DayOfWeek + 6) % 7;
-        var weekStart = today.AddDays(-daysSinceMonday);
-        var weekEnd = weekStart.AddDays(7);
+        var (weekStart, weekEnd) = LessonService.GetWeek(DateTime.Today);
 
         var lessons = await GetAccessibleLessons(currentUserId)
             .Where(l => l.StartsAt >= weekStart && l.StartsAt < weekEnd)
@@ -83,10 +81,7 @@ public class LessonsController : ControllerBase
 
         var studentIds = lesson.StudentIds.Distinct().ToList();
 
-        var students = await _context.Students
-            .AsTracking()
-            .Where(s => studentIds.Contains(s.Id) 
-                     && s.TeacherId == teacher.Id)
+        var students = await LessonService.EligibleStudents(_context.Students.AsTracking(), studentIds, teacher.Id)
             .ToListAsync(cancellationToken);
 
         if (students.Count != studentIds.Count)
@@ -106,17 +101,6 @@ public class LessonsController : ControllerBase
             LessonResponse.FromLesson(newLesson));
     }
 
-    private IQueryable<Lesson> GetAccessibleLessons(Guid currentUserId)
-    {
-        var query = _context.Lessons.AsNoTracking();
-
-        if (User.IsInRole("Teacher"))
-            return query.Where(l => l.Teacher.UserId == currentUserId);
-
-        if (User.IsInRole("Student"))
-            return query.Where(l =>
-                l.Students.Any(s => s.UserId == currentUserId && s.TeacherId == l.TeacherId));
-
-        return query.Where(l => false);
-    }
+    private IQueryable<Lesson> GetAccessibleLessons(Guid currentUserId) =>
+        LessonService.GetAccessibleLessons(currentUserId, User, _context.Lessons.AsNoTracking());
 }
