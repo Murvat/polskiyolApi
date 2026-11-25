@@ -1,0 +1,16 @@
+name: Verify service unit tests
+on:
+  push:
+    branches: [verify/phase-one-unit-tests]
+permissions:
+  contents: read
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet test backend/api.IntegrationTests/api.IntegrationTests.csproj --configuration Release --filter FullyQualifiedName~PolskiYol.Tests.Unit
