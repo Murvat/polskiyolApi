@@ -232,6 +232,129 @@ public sealed class OfflineApiTests
         Assert.DoesNotContain(MemoryAccounts.PrivateFailure, body);
     }
 
+    [Fact]
+    public async Task DuplicateRegistrationKeepsTheOriginalAccount()
+    {
+        await using var host = new MemoryApiHost();
+        using var client = host.Connect();
+        const string email = "student@example.test";
+        await Register(client, "student", email);
+        await Login(client, email);
+        var before = await client.GetFromJsonAsync<StudentResponse>("/api/students/me");
+
+        using var duplicate = await client.PostAsJsonAsync("/api/auth/register/student", new
+        {
+            email, password = "Different-password-2", firstName = "Other", lastName = "Name", phoneNumber = "5550101"
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, duplicate.StatusCode);
+
+        using var rejected = await client.PostAsJsonAsync("/api/auth/login", new { email, password = "Different-password-2" });
+        Assert.Equal(HttpStatusCode.Unauthorized, rejected.StatusCode);
+        await Login(client, email);
+        var after = await client.GetFromJsonAsync<StudentResponse>("/api/students/me");
+        Assert.NotNull(before);
+        Assert.NotNull(after);
+        Assert.Equal(before.Id, after.Id);
+        Assert.Equal(before.FirstName, after.FirstName);
+    }
+
+    [Fact]
+    public async Task AssignmentValidatesProfilesAndLeavesTheCurrentTeacherInPlaceAfterRejection()
+    {
+        await using var host = new MemoryApiHost();
+        using var classroom = await Classroom.Create(host);
+        using var admin = host.Connect();
+        await Login(admin, "admin@example.test");
+        var before = await classroom.Student.GetFromJsonAsync<StudentResponse>("/api/students/me");
+        Assert.NotNull(before);
+        Assert.NotNull(before.TeacherId);
+
+        using var invalid = await admin.PutAsJsonAsync("/api/students/teacher-assignment",
+            new { studentEmail = "bad-email", teacherEmail = Classroom.TeacherEmail });
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        using var missingStudent = await admin.PutAsJsonAsync("/api/students/teacher-assignment",
+            new { studentEmail = "missing@example.test", teacherEmail = Classroom.TeacherEmail });
+        Assert.Equal(HttpStatusCode.NotFound, missingStudent.StatusCode);
+        using var missingTeacher = await admin.PutAsJsonAsync("/api/students/teacher-assignment",
+            new { studentEmail = Classroom.StudentEmail, teacherEmail = "missing@example.test" });
+        Assert.Equal(HttpStatusCode.NotFound, missingTeacher.StatusCode);
+
+        var after = await classroom.Student.GetFromJsonAsync<StudentResponse>("/api/students/me");
+        Assert.Equal(before.TeacherId, after!.TeacherId);
+    }
+
+    [Theory]
+    [InlineData("?limit=0", "limit")]
+    [InlineData("?limit=101", "limit")]
+    [InlineData("?beforeId=0", "beforeId")]
+    [InlineData("?beforeId=invalid", "beforeId")]
+    public async Task ListEndpointsRejectInvalidPagingParameters(string query, string field)
+    {
+        await using var host = new MemoryApiHost();
+        using var classroom = await Classroom.Create(host);
+        var conversation = Assert.Single((await classroom.Student.GetFromJsonAsync<ConversationResponse[]>("/api/conversations"))!);
+
+        foreach (var path in new[] { "/api/feed-posts", "/api/materials", $"/api/conversations/{conversation.Id}/messages" })
+        {
+            using var response = await classroom.Student.GetAsync(path + query);
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            var details = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+            Assert.NotNull(details);
+            Assert.Contains(details.Errors.Keys, key => string.Equals(key, field, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    [Fact]
+    public async Task MessageLookupRespectsTheConversationAndHistoryReturnsAfterReassignmentBack()
+    {
+        await using var host = new MemoryApiHost();
+        using var classroom = await Classroom.Create(host);
+        var oldConversation = Assert.Single((await classroom.Student.GetFromJsonAsync<ConversationResponse[]>("/api/conversations"))!);
+        var oldMessages = $"/api/conversations/{oldConversation.Id}/messages";
+
+        using var empty = await classroom.Student.PostAsJsonAsync(oldMessages, new { content = "   " });
+        Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
+        using var sent = await classroom.Student.PostAsJsonAsync(oldMessages, new { content = "Saved history" });
+        var message = await Read<MessageResponse>(sent);
+        Assert.Equal(HttpStatusCode.Created, sent.StatusCode);
+
+        await classroom.Assign(Classroom.OtherTeacherEmail);
+        var currentConversation = Assert.Single((await classroom.Student.GetFromJsonAsync<ConversationResponse[]>("/api/conversations"))!);
+        using var wrongConversation = await classroom.Student.GetAsync($"/api/conversations/{currentConversation.Id}/messages/{message.Id}");
+        Assert.Equal(HttpStatusCode.NotFound, wrongConversation.StatusCode);
+        using var oldHistory = await classroom.Student.GetAsync(oldMessages);
+        Assert.Equal(HttpStatusCode.NotFound, oldHistory.StatusCode);
+
+        await classroom.Assign(Classroom.TeacherEmail);
+        var restored = await classroom.Student.GetFromJsonAsync<MessageResponse>(oldMessages + $"/{message.Id}");
+        Assert.NotNull(restored);
+        Assert.Equal("Saved history", restored.Content);
+    }
+
+    [Fact]
+    public async Task StudentMutationsReturnForbiddenAndInvalidTeacherPaymentReturnsFieldError()
+    {
+        await using var host = new MemoryApiHost();
+        using var classroom = await Classroom.Create(host);
+        var student = (await classroom.Student.GetFromJsonAsync<StudentResponse>("/api/students/me"))!;
+        var payment = new { studentId = student.Id, year = 2026, month = 11, expectedAmount = 10.001m, dueDate = "2026-11-30" };
+
+        using var createPayment = await classroom.Student.PostAsJsonAsync("/api/payments", payment);
+        using var createLesson = await classroom.Student.PostAsJsonAsync("/api/lessons", new { });
+        using var createPost = await classroom.Student.PostAsJsonAsync("/api/feed-posts", new { });
+        using var createMaterial = await Upload(classroom.Student, "/api/materials", "lesson.pdf", "%PDF-fixture"u8.ToArray());
+        Assert.Equal(HttpStatusCode.Forbidden, createPayment.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, createLesson.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, createPost.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, createMaterial.StatusCode);
+
+        using var invalidPayment = await classroom.Teacher.PostAsJsonAsync("/api/payments", payment);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidPayment.StatusCode);
+        var details = await invalidPayment.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        Assert.NotNull(details);
+        Assert.Contains(details.Errors.Keys, key => string.Equals(key, "ExpectedAmount", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static async Task<T> Read<T>(HttpResponseMessage response)
     {
         response.EnsureSuccessStatusCode();
