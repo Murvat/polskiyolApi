@@ -2,32 +2,28 @@ using Microsoft.Extensions.Options;
 using PolskiYol.Configuration;
 using PolskiYol.Models;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.SqlClient;
-using System.Data;
 using System.Diagnostics;
 
 namespace PolskiYol.Services;
 
 public sealed class RefreshTokenService
 {
-    private readonly UserManager<ApplicationUser> _userManager;
-    private readonly SignInManager<ApplicationUser> _signInManager;
-    private readonly AppDbContext _context;
+    private readonly IAccountAccess _accounts;
+    private readonly IRefreshTokenStore _store;
+    private readonly TimeProvider _clock;
     private readonly JwtOptions _jwtOptions;
     private readonly ILogger<RefreshTokenService> _logger;
 
     public RefreshTokenService(
-        AppDbContext context,
-        IOptions<JwtOptions> jwtOptions,
-        UserManager<ApplicationUser> userManager,
-        SignInManager<ApplicationUser> signInManager,
+        IRefreshTokenStore store, IOptions<JwtOptions> jwtOptions,
+        IAccountAccess accounts, TimeProvider clock,
         ILogger<RefreshTokenService> logger)
     {
-        _context = context;
+        _store = store;
         _jwtOptions = jwtOptions.Value;
-        _userManager = userManager;
-        _signInManager = signInManager;
+        _accounts = accounts;
+        _clock = clock;
         _logger = logger;
     }
 
@@ -35,7 +31,7 @@ public sealed class RefreshTokenService
         ApplicationUser user,
         CancellationToken cancellationToken = default)
     {
-        var now = DateTime.UtcNow;
+        var now = _clock.GetUtcNow().UtcDateTime;
 
         var token = RefreshTokenGenerator.GenerateToken();
 
@@ -43,7 +39,7 @@ public sealed class RefreshTokenService
             RefreshTokenGenerator.HashToken(token);
 
         var securityStamp =
-            await _userManager.GetSecurityStampAsync(user);
+            await _accounts.GetSecurityStampAsync(user);
 
         var sessionExpiresAt = now.AddDays(
             _jwtOptions.AbsoluteSessionExpirationDays);
@@ -64,9 +60,7 @@ public sealed class RefreshTokenService
             SessionExpiresAtUtc = sessionExpiresAt
         };
 
-        _context.RefreshTokens.Add(refreshToken);
-
-        await _context.SaveChangesAsync(cancellationToken);
+        await _store.SaveAsync(refreshToken, cancellationToken);
 
         return new RefreshTokenResult(token, expiresAt, sessionExpiresAt);
     }
@@ -109,7 +103,7 @@ public sealed class RefreshTokenService
                     throw;
                 }
 
-                _context.ChangeTracker.Clear();
+                _store.ClearTracking();
                 await Task.Delay(Random.Shared.Next(30, 101) * attempt, cancellationToken);
             }
         }
@@ -129,15 +123,12 @@ public sealed class RefreshTokenService
         var tokenHash =
             RefreshTokenGenerator.HashToken(token);
 
-        var familyId = await _context.RefreshTokens
-            .Where(t => t.TokenHash == tokenHash)
-            .Select(t => (Guid?)t.FamilyId)
-            .SingleOrDefaultAsync(cancellationToken);
+        var familyId = await _store.FindFamilyAsync(tokenHash, cancellationToken);
 
         if (familyId is null)
             return;
 
-        var revoked = await RevokeFamilyAsync(familyId.Value, DateTime.UtcNow, cancellationToken);
+        var revoked = await _store.RevokeFamilyAsync(familyId.Value, _clock.GetUtcNow().UtcDateTime, cancellationToken);
         if (revoked > 0)
             _logger.LogInformation("Refresh token family revoked on logout. TraceId {TraceId}", Activity.Current?.TraceId);
     }
@@ -153,23 +144,15 @@ public sealed class RefreshTokenService
         var tokenHash =
             RefreshTokenGenerator.HashToken(token);
 
-        await using var transaction =
-            await _context.Database.BeginTransactionAsync(
-                IsolationLevel.Serializable,
-                cancellationToken);
-
-        var existingToken = await _context.RefreshTokens
-            .Include(t => t.User)
-            .SingleOrDefaultAsync(
-                t => t.TokenHash == tokenHash,
-                cancellationToken);
+        await using var transaction = await _store.BeginRotationAsync(cancellationToken);
+        var existingToken = await _store.FindAsync(tokenHash, cancellationToken);
 
         // 1. Check whether the token exists
 
         if (existingToken is null)
             return null;
 
-        var now = DateTime.UtcNow;
+        var now = _clock.GetUtcNow().UtcDateTime;
 
         // 2. Detect refresh token reuse
 
@@ -177,7 +160,7 @@ public sealed class RefreshTokenService
         {
             if (existingToken.ReplacedByTokenId is not null)
             {
-                var revoked = await RevokeFamilyAsync(
+                var revoked = await _store.RevokeFamilyAsync(
                     existingToken.FamilyId,
                     now,
                     cancellationToken);
@@ -195,7 +178,7 @@ public sealed class RefreshTokenService
 
         if (existingToken.SessionExpiresAtUtc <= now)
         {
-            await RevokeFamilyAsync(
+            await _store.RevokeFamilyAsync(
                 existingToken.FamilyId,
                 now,
                 cancellationToken);
@@ -211,9 +194,9 @@ public sealed class RefreshTokenService
             return null;
         // 4. Check account eligibility
 
-        if (!await CanRefreshAsync(existingToken.User))
+        if (!await _accounts.CanRefreshAsync(existingToken.User))
         {
-            await RevokeFamilyAsync(
+            await _store.RevokeFamilyAsync(
                 existingToken.FamilyId,
                 now,
                 cancellationToken);
@@ -229,7 +212,7 @@ public sealed class RefreshTokenService
         // 5. Validate the security stamp
 
         var currentSecurityStamp =
-            await _userManager.GetSecurityStampAsync(
+            await _accounts.GetSecurityStampAsync(
                 existingToken.User);
 
         if (!string.Equals(
@@ -237,7 +220,7 @@ public sealed class RefreshTokenService
                 currentSecurityStamp,
                 StringComparison.Ordinal))
         {
-            await RevokeFamilyAsync(
+            await _store.RevokeFamilyAsync(
                 existingToken.FamilyId,
                 now,
                 cancellationToken);
@@ -274,11 +257,7 @@ public sealed class RefreshTokenService
         existingToken.RevokedAtUtc = now;
         existingToken.ReplacedByTokenId = replacementToken.Id;
 
-        _context.RefreshTokens.Add(replacementToken);
-
-        // 8. Persist changes and commit the transaction
-
-        await _context.SaveChangesAsync(cancellationToken);
+        await _store.SaveAsync(replacementToken, cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
 
@@ -287,37 +266,5 @@ public sealed class RefreshTokenService
             newToken,
             expiresAt,
             existingToken.SessionExpiresAtUtc);
-    }
-
-    private async Task<bool> CanRefreshAsync(
-        ApplicationUser user)
-    {
-        if (!await _signInManager.CanSignInAsync(user))
-            return false;
-
-        if (_userManager.SupportsUserLockout &&
-            await _userManager.IsLockedOutAsync(user))
-            return false;
-
-        if (await _userManager.GetTwoFactorEnabledAsync(user))
-            return false;
-
-        return true;
-    }
-
-    private Task<int> RevokeFamilyAsync(
-        Guid familyId,
-        DateTime revokedAtUtc,
-        CancellationToken cancellationToken)
-    {
-        return _context.RefreshTokens
-            .Where(t =>
-                t.FamilyId == familyId &&
-                t.RevokedAtUtc == null)
-            .ExecuteUpdateAsync(
-                setters => setters.SetProperty(
-                    t => t.RevokedAtUtc,
-                    revokedAtUtc),
-                cancellationToken);
     }
 }

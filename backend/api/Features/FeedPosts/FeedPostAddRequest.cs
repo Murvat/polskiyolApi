@@ -10,16 +10,4 @@ public class FeedPostAddRequest
     [StringLength(4000)]
     public string Content { get; set; } = string.Empty;
 
-    public static FeedPost ToFeedPost(
-        FeedPostAddRequest request,
-        int teacherId)
-    {
-        return new FeedPost
-        {
-            Title = request.Title,
-            Content = request.Content,
-            TeacherId = teacherId,
-            CreatedAt = DateTime.UtcNow
-        };
-    }
 }

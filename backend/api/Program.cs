@@ -125,7 +125,14 @@ builder.Services.AddOptions<JwtOptions>()
         }
     }, "JWT signing key must contain at least 256 bits encoded in Base64.")
     .ValidateOnStart();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<IAccountAccess, AccountAccess>();
+builder.Services.AddScoped<IRefreshTokenStore, RefreshTokenStore>();
 builder.Services.AddScoped<RefreshTokenService>();
+builder.Services.AddScoped<IRegistrationStore, RegistrationStore>();
+builder.Services.AddScoped<AuthenticationService>();
+builder.Services.AddScoped<IStudentAssignmentStore, StudentAssignmentStore>();
+builder.Services.AddScoped<StudentAssignmentService>();
 // Authentication schemes
 builder.Services.AddAuthentication(options =>
 {

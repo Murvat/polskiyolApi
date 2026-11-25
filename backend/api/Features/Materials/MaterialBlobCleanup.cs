@@ -33,24 +33,35 @@ public sealed class MaterialBlobCleanup(ILogger<MaterialBlobCleanup> logger) : B
     {
         await foreach (var blob in _pending.Reader.ReadAllAsync(stoppingToken))
         {
-            for (var attempt = 1; attempt <= RetryAttempts; attempt++)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(attempt * 2), stoppingToken);
+            await RetryAsync(
+                async ct => { await blob.DeleteIfExistsAsync(cancellationToken: ct); },
+                (attempt, ct) => Task.Delay(TimeSpan.FromSeconds(attempt * 2), ct),
+                stoppingToken);
+        }
+    }
 
-                try
+    public async Task RetryAsync(
+        Func<CancellationToken, Task> delete,
+        Func<int, CancellationToken, Task> delay,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= RetryAttempts; attempt++)
+        {
+            await delay(attempt, cancellationToken);
+
+            try
+            {
+                await delete(cancellationToken);
+                return;
+            }
+            catch (RequestFailedException ex)
+            {
+                if (attempt == RetryAttempts || !IsTransient(ex))
                 {
-                    await blob.DeleteIfExistsAsync(cancellationToken: stoppingToken);
-                    break;
-                }
-                catch (RequestFailedException ex)
-                {
-                    if (attempt == RetryAttempts || !IsTransient(ex))
-                    {
-                        logger.LogError(
-                            "Material blob deletion stopped after {Attempt} retries. Azure status {Status}.",
-                            attempt, ex.Status);
-                        break;
-                    }
+                    logger.LogError(
+                        "Material blob deletion stopped after {Attempt} retries. Azure status {Status}.",
+                        attempt, ex.Status);
+                    return;
                 }
             }
         }

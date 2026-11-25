@@ -1,3 +1,4 @@
+using PolskiYol.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -34,7 +35,7 @@ public class PaymentsController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        if (!ValidPeriod(year, month))
+        if (!PaymentService.ValidPeriod(year, month))
             return BadRequest("Invalid year or month.");
 
         if (status.HasValue && !Enum.IsDefined(status.Value))
@@ -97,7 +98,7 @@ public class PaymentsController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        if (!ValidPeriod(year, month))
+        if (!PaymentService.ValidPeriod(year, month))
             return BadRequest("Invalid year or month.");
 
         if (studentId.HasValue && studentId.Value <= 0)
@@ -148,7 +149,7 @@ public class PaymentsController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        if (!ValidPeriod(request.Year, request.Month))
+        if (!PaymentService.ValidPeriod(request.Year, request.Month))
             return BadRequest("Invalid year or month.");
 
         if (request.ExpectedAmount <= 0)
@@ -174,10 +175,7 @@ public class PaymentsController : ControllerBase
         if (student is null)
             return NotFound();
 
-        var exists = await _context.Payments.AnyAsync(p =>
-            p.StudentId == student.Id &&
-            p.Year == request.Year &&
-            p.Month == request.Month, ct);
+        var exists = await PaymentService.ForMonth(_context.Payments, student.Id, request.Year, request.Month).AnyAsync(ct);
 
         if (exists)
             return Conflict(DuplicatePaymentMessage);
@@ -234,35 +232,14 @@ public class PaymentsController : ControllerBase
         if (payment is null)
             return NotFound();
 
-        if (payment.PaidAt == null)
-        {
-            payment.PaidAt = DateTime.UtcNow;
-
+        if (PaymentService.MarkPaid(payment, DateTime.UtcNow))
             await _context.SaveChangesAsync(ct);
-        }
 
         return NoContent();
     }
 
-    private IQueryable<Payment> GetAccessiblePayments(
-        Guid currentUserId)
-    {
-        var query = _context.Payments.AsNoTracking();
-
-        if (User.IsInRole("Teacher"))
-        {
-            return query.Where(
-                p => p.Teacher.UserId == currentUserId && p.Student.TeacherId == p.TeacherId);
-        }
-
-        if (User.IsInRole("Student"))
-        {
-            return query.Where(
-                p => p.Student.UserId == currentUserId);
-        }
-
-        return query.Where(p => false);
-    }
+    private IQueryable<Payment> GetAccessiblePayments(Guid currentUserId) =>
+        PaymentService.GetAccessiblePayments(currentUserId, User, _context.Payments.AsNoTracking());
 
     private IQueryable<Payment> PeriodQuery(
         Guid currentUserId,
@@ -281,13 +258,6 @@ public class PaymentsController : ControllerBase
         return query;
     }
 
-    private static bool ValidPeriod(int year, int? month)
-    {
-        return year is >= 1 and <= 9999 &&
-               (!month.HasValue ||
-                month.Value is >= 1 and <= 12);
-    }
-
     private static DateOnly Today()
     {
         var timeZone = TimeZoneInfo.FindSystemTimeZoneById(
@@ -304,29 +274,7 @@ public class PaymentsController : ControllerBase
         DateOnly today,
         CancellationToken ct)
     {
-        var summary = await query
-            .GroupBy(p => 1)
-            .Select(g => new PaymentSummaryResponse
-            {
-                TotalExpected = g.Sum(p => p.ExpectedAmount),
-
-                TotalPaid = g.Sum(p =>
-                    p.PaidAt != null ? p.ExpectedAmount : 0m),
-
-                TotalDelayed = g.Sum(p =>
-                    p.PaidAt == null && p.DueDate < today
-                        ? p.ExpectedAmount
-                        : 0m),
-
-                PaidCount = g.Count(p => p.PaidAt != null),
-
-                DueCount = g.Count(p =>
-                    p.PaidAt == null && p.DueDate >= today),
-
-                DelayedCount = g.Count(p =>
-                    p.PaidAt == null && p.DueDate < today)
-            })
-            .FirstOrDefaultAsync(ct);
+        var summary = await PaymentService.Summaries(query, today).FirstOrDefaultAsync(ct);
 
         return summary ?? new PaymentSummaryResponse();
     }

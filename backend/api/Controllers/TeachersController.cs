@@ -1,3 +1,4 @@
+using PolskiYol.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
@@ -36,17 +37,14 @@ public class TeachersController : ControllerBase
 
         if (User.IsInRole("Teacher"))
         {
-            if (teacher.UserId != currentUserId)
+            if (!ProfileAccess.IsOwnProfile(User, "Teacher", teacher.UserId, currentUserId))
             {
                 return Forbid();
             }
         }
         else if (User.IsInRole("Student"))
         {
-            bool isAssignedStudent = await _context.Students
-                .AnyAsync(s =>
-                    s.UserId == currentUserId &&
-                    s.TeacherId == id);
+            bool isAssignedStudent = await ProfileAccess.AssignedStudent(_context.Students, id, currentUserId).AnyAsync();
 
             if (!isAssignedStudent)
             {

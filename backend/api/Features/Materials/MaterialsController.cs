@@ -14,7 +14,6 @@ using Microsoft.EntityFrameworkCore;
 [Route("api/materials")]
 public class MaterialsController : ControllerBase
 {
-    private const long MaxCoverBytes = 5 * 1024 * 1024;
 
     private readonly AppDbContext _context;
     private readonly BlobContainerClient _container;
@@ -102,22 +101,9 @@ public class MaterialsController : ControllerBase
 
         var file = request.File;
 
-        var fileName = Path.GetFileName(
-            file.FileName.Replace('\\', '/'));
-
-        if (string.IsNullOrWhiteSpace(fileName) ||
-            fileName.Length > 255 ||
-            !fileName.EndsWith(".pdf",
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return BadRequest("Invalid PDF filename.");
-        }
-
-        if (!await HasSignatureAsync(
-                file, [0x25, 0x50, 0x44, 0x46, 0x2D], ct))
-        {
-            return BadRequest("File is not a recognized PDF.");
-        }
+        var (fileName, error) = await MaterialService.ValidatePdfAsync(file, ct);
+        if (error is not null)
+            return BadRequest(error);
 
         var storageKey = $"pdf/{Guid.NewGuid():N}.pdf";
         var blob = _container.GetBlobClient(storageKey);
@@ -125,12 +111,12 @@ public class MaterialsController : ControllerBase
         var material = new Material
         {
             TeacherId = teacher.Id,
-            FileName = fileName,
+            FileName = fileName!,
             Description = request.Description,
             FileStorageKey = storageKey
         };
 
-        try
+        await MaterialService.SaveWithCleanupAsync(async () =>
         {
             await using (var stream = file.OpenReadStream())
             {
@@ -148,12 +134,7 @@ public class MaterialsController : ControllerBase
 
             _context.Materials.Add(material);
             await _context.SaveChangesAsync(ct);
-        }
-        catch
-        {
-            await _blobCleanup.DeleteOrQueueAsync(_container, storageKey);
-            throw;
-        }
+        }, () => _blobCleanup.DeleteOrQueueAsync(_container, storageKey));
 
         return CreatedAtAction(
             nameof(GetMaterial),
@@ -188,42 +169,18 @@ public class MaterialsController : ControllerBase
 
         var file = request.File;
 
-        if (file == null || file.Length == 0)
-            return BadRequest("A cover image is required.");
-
-        if (file.Length > MaxCoverBytes)
-            return BadRequest("Cover exceeds the 5 MB limit.");
-
-        var extension = Path.GetExtension(file.FileName)
-            .ToLowerInvariant();
-
-        var validImage = extension switch
-        {
-            ".png" => await HasSignatureAsync(
-                file, [0x89, 0x50, 0x4E, 0x47,
-                       0x0D, 0x0A, 0x1A, 0x0A], ct),
-
-            ".jpg" or ".jpeg" => await HasSignatureAsync(
-                file, [0xFF, 0xD8, 0xFF], ct),
-
-            _ => false
-        };
-
-        if (!validImage)
-            return BadRequest("Only PNG and JPEG images are supported.");
-
-        var contentType = extension == ".png"
-            ? "image/png"
-            : "image/jpeg";
+        var (extension, contentType, error) = await MaterialService.ValidateCoverAsync(file, ct);
+        if (error is not null)
+            return BadRequest(error);
 
         var storageKey = $"covers/{Guid.NewGuid():N}{extension}";
         var blob = _container.GetBlobClient(storageKey);
 
         var previousCoverKey = material.CoverStorageKey;
 
-        try
+        await MaterialService.SaveWithCleanupAsync(async () =>
         {
-            await using (var stream = file.OpenReadStream())
+            await using (var stream = file!.OpenReadStream())
             {
                 await blob.UploadAsync(
                     stream,
@@ -239,12 +196,7 @@ public class MaterialsController : ControllerBase
 
             material.CoverStorageKey = storageKey;
             await _context.SaveChangesAsync(ct);
-        }
-        catch
-        {
-            await _blobCleanup.DeleteOrQueueAsync(_container, storageKey);
-            throw;
-        }
+        }, () => _blobCleanup.DeleteOrQueueAsync(_container, storageKey));
 
         await _blobCleanup.DeleteOrQueueAsync(_container, previousCoverKey);
 
@@ -364,40 +316,6 @@ public class MaterialsController : ControllerBase
         return NoContent();
     }
 
-    private IQueryable<Material> GetAccessibleMaterials(
-        Guid currentUserId)
-    {
-        var query = _context.Materials.AsNoTracking();
-
-        if (User.IsInRole("Teacher"))
-        {
-            return query.Where(m =>
-                m.Teacher.UserId == currentUserId);
-        }
-
-        if (User.IsInRole("Student"))
-        {
-            return query.Where(m => _context.Students.Any(s =>
-                s.UserId == currentUserId &&
-                s.TeacherId == m.TeacherId));
-        }
-
-        return query.Where(m => false);
-    }
-
-    private static async Task<bool> HasSignatureAsync(
-        IFormFile file,
-        byte[] signature,
-        CancellationToken ct)
-    {
-        if (file.Length < signature.Length)
-            return false;
-
-        await using var stream = file.OpenReadStream();
-
-        var header = new byte[signature.Length];
-        await stream.ReadExactlyAsync(header, ct);
-
-        return header.SequenceEqual(signature);
-    }
+    private IQueryable<Material> GetAccessibleMaterials(Guid currentUserId) =>
+        MaterialService.GetAccessibleMaterials(currentUserId, User, _context.Materials.AsNoTracking(), _context.Students);
 }

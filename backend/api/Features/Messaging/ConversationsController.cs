@@ -1,3 +1,4 @@
+using PolskiYol.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
@@ -68,25 +69,6 @@ public class ConversationsController : ControllerBase
         return Ok(conversation);
     }
 
-    private IQueryable<Conversation> GetAccessibleConversations(
-        Guid currentUserId)
-    {
-        var query = _context.Conversations
-            .AsNoTracking()
-            .Where(c => c.Student.TeacherId == c.TeacherId);
-
-        if (User.IsInRole("Teacher"))
-        {
-            return query.Where(c =>
-                c.Teacher.UserId == currentUserId);
-        }
-
-        if (User.IsInRole("Student"))
-        {
-            return query.Where(c =>
-                c.Student.UserId == currentUserId);
-        }
-
-        return query.Where(c => false);
-    }
+    private IQueryable<Conversation> GetAccessibleConversations(Guid currentUserId) =>
+        MessagingService.GetAccessibleConversations(currentUserId, User, _context.Conversations.AsNoTracking());
 }

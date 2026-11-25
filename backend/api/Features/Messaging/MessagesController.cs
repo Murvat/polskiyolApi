@@ -99,20 +99,8 @@ public class MessagesController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        MessageSenderType senderType;
-
-        if (User.IsInRole("Teacher"))
-        {
-            senderType = MessageSenderType.Teacher;
-        }
-        else if (User.IsInRole("Student"))
-        {
-            senderType = MessageSenderType.Student;
-        }
-        else
-        {
+        if (!User.IsInRole("Teacher") && !User.IsInRole("Student"))
             return Forbid();
-        }
 
         bool isParticipant = await GetAccessibleConversations(currentUserId)
             .AnyAsync(c => c.Id == conversationId, ct);
@@ -120,16 +108,9 @@ public class MessagesController : ControllerBase
         if (!isParticipant)
             return NotFound();
 
-        if (string.IsNullOrWhiteSpace(request.Content))
+        var message = MessagingService.CreateMessage(conversationId, request.Content, User, DateTime.UtcNow);
+        if (message is null)
             return BadRequest("Message cannot be empty.");
-
-        var message = new Message
-        {
-            ConversationId = conversationId,
-            Content = request.Content.Trim(),
-            SentAt = DateTime.UtcNow,
-            SenderType = senderType
-        };
 
         _context.Messages.Add(message);
 
@@ -145,25 +126,6 @@ public class MessagesController : ControllerBase
             MessageResponse.FromMessage(message));
     }
 
-    private IQueryable<Conversation> GetAccessibleConversations(
-        Guid currentUserId)
-    {
-        var query = _context.Conversations
-            .AsNoTracking()
-            .Where(c => c.Student.TeacherId == c.TeacherId);
-
-        if (User.IsInRole("Teacher"))
-        {
-            return query.Where(c =>
-                c.Teacher.UserId == currentUserId);
-        }
-
-        if (User.IsInRole("Student"))
-        {
-            return query.Where(c =>
-                c.Student.UserId == currentUserId);
-        }
-
-        return query.Where(c => false);
-    }
+    private IQueryable<Conversation> GetAccessibleConversations(Guid currentUserId) =>
+        MessagingService.GetAccessibleConversations(currentUserId, User, _context.Conversations.AsNoTracking());
 }
