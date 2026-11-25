@@ -49,10 +49,12 @@ internal sealed class MemoryAccounts(MemoryApiData data) : IAccountAccess, IRegi
 
     public Task<IdentityResult> CreateAsync(ApplicationUser user, string password)
     {
+        if (_users.ContainsKey(user.Email!))
+            return Task.FromResult(IdentityResult.Failed(new IdentityError { Code = "DuplicateEmail" }));
+
+        user.Id = Guid.NewGuid();
         _password = password;
-        return Task.FromResult(_users.ContainsKey(user.Email!)
-            ? IdentityResult.Failed(new IdentityError { Code = "DuplicateEmail" })
-            : IdentityResult.Success);
+        return Task.FromResult(IdentityResult.Success);
     }
 
     public Task<IdentityResult> AddRoleAsync(ApplicationUser user, string role)
