@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PolskiYol.Tests.Http;
 
-public sealed class OfflineApiTests
+public sealed partial class OfflineApiTests
 {
     [Fact]
     public async Task RegistrationLoginRefreshLogoutAndProfilesUseTheHttpContract()

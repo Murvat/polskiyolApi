@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using PolskiYol.Features.Materials;
 using PolskiYol.Configuration;
 using PolskiYol.Services;
+using PolskiYol.Features.Realtime;
 using PolskiYol.Data;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -20,6 +21,10 @@ var builder = WebApplication.CreateBuilder(args);
 // Controllers and OpenAPI
 builder.Services.AddOpenApi();
 builder.Services.AddControllers();
+builder.Services.AddSignalR();
+// Browser WebSocket requests carry the bearer token in the hub query string.
+builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
+builder.Services.AddScoped<RealtimeNotifications>();
 builder.Services.AddProblemDetails();
 builder.Services.AddRateLimiter(options =>
 {
@@ -187,6 +192,19 @@ builder.Services.AddOptions<JwtBearerOptions>(
         options.IncludeErrorDetails = false;
         options.Events = new JwtBearerEvents
         {
+            OnMessageReceived = context =>
+            {
+                var request = context.HttpContext.Request;
+                if (HttpMethods.IsGet(request.Method) && request.Path == MessagingHub.Route &&
+                    !request.Headers.ContainsKey("Authorization") &&
+                    request.Query.TryGetValue("access_token", out var token) &&
+                    token.Count == 1)
+                {
+                    context.Token = token[0];
+                }
+
+                return Task.CompletedTask;
+            },
             OnTokenValidated = context =>
             {
                 var userId = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -239,6 +257,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<MessagingHub>(MessagingHub.Route, options => options.CloseOnAuthenticationExpiration = true);
 
 app.Run();
 

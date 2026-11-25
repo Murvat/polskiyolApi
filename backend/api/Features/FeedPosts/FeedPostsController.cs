@@ -1,3 +1,4 @@
+using PolskiYol.Features.Realtime;
 using PolskiYol.Data;
 using System.ComponentModel.DataAnnotations;
 using PolskiYol.Features;
@@ -12,10 +13,12 @@ using System.Security.Claims;
 public class FeedPostsController : ControllerBase
 {
     private readonly IApiData _data;
+    private readonly RealtimeNotifications _notifications;
 
-    public FeedPostsController(IApiData data)
+    public FeedPostsController(IApiData data, RealtimeNotifications notifications)
     {
         _data = data;
+        _notifications = notifications;
     }
 
     // GET /api/feed-posts
@@ -93,6 +96,8 @@ public class FeedPostsController : ControllerBase
 
         await _data.SaveChangesAsync(cancellationToken);
 
+        await _notifications.FeedPostCreatedAsync(post.TeacherId, post.Id);
+
         return CreatedAtAction(
             nameof(GetPost),
             new { id = post.Id },
@@ -120,6 +125,8 @@ public class FeedPostsController : ControllerBase
         _data.Remove(post);
 
         await _data.SaveChangesAsync(cancellationToken);
+
+        await _notifications.FeedPostDeletedAsync(post.TeacherId, post.Id);
 
         return NoContent();
     }

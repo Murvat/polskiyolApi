@@ -61,5 +61,14 @@ internal sealed class MemoryApiData : IApiData
     }
 
     public void Remove<T>(T entity) where T : class => Rows<T>().Remove(entity);
-    public Task<int> SaveChangesAsync(CancellationToken ct) => Task.FromResult(1);
+    public bool FailNextSave { get; set; }
+
+    public Task<int> SaveChangesAsync(CancellationToken ct)
+    {
+        if (!FailNextSave)
+            return Task.FromResult(1);
+
+        FailNextSave = false;
+        return Task.FromException<int>(new InvalidOperationException("Test write failed."));
+    }
 }

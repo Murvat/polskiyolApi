@@ -1,3 +1,4 @@
+using PolskiYol.Features.Realtime;
 using PolskiYol.Data;
 using System.ComponentModel.DataAnnotations;
 using PolskiYol.Features;
@@ -15,15 +16,18 @@ public class MaterialsController : ControllerBase
 {
 
     private readonly IApiData _data;
+    private readonly RealtimeNotifications _notifications;
     private readonly IMaterialBlobStore _blobs;
     private readonly ILogger<MaterialsController> _logger;
 
     public MaterialsController(
         IApiData data,
+        RealtimeNotifications notifications,
         IMaterialBlobStore blobs,
         ILogger<MaterialsController> logger)
     {
         _data = data;
+        _notifications = notifications;
         _blobs = blobs;
         _logger = logger;
     }
@@ -121,6 +125,8 @@ public class MaterialsController : ControllerBase
             await _data.SaveChangesAsync(ct);
         }, () => _blobs.DeleteOrQueueAsync(storageKey));
 
+        await _notifications.MaterialCreatedAsync(material.TeacherId, material.Id);
+
         return CreatedAtAction(
             nameof(GetMaterial),
             new { id = material.Id },
@@ -172,6 +178,7 @@ public class MaterialsController : ControllerBase
             await _data.SaveChangesAsync(ct);
         }, () => _blobs.DeleteOrQueueAsync(storageKey));
 
+        await _notifications.MaterialCoverUpdatedAsync(material.TeacherId, material.Id);
         await _blobs.DeleteOrQueueAsync(previousCoverKey);
 
         return NoContent();
@@ -273,6 +280,7 @@ public class MaterialsController : ControllerBase
 
         _data.Remove(material);
         await _data.SaveChangesAsync(ct);
+        await _notifications.MaterialDeletedAsync(material.TeacherId, material.Id);
 
         await _blobs.DeleteOrQueueAsync(material.FileStorageKey);
         await _blobs.DeleteOrQueueAsync(material.CoverStorageKey);

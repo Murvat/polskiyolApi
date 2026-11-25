@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Identity;
+using PolskiYol.Features.Realtime;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 
@@ -16,7 +17,8 @@ public interface IStudentAssignmentStore
     Task CreateConversationAsync(int studentId, int teacherId, CancellationToken ct);
 }
 
-public sealed class StudentAssignmentService(IStudentAssignmentStore store, ILookupNormalizer normalizer)
+public sealed class StudentAssignmentService(
+    IStudentAssignmentStore store, ILookupNormalizer normalizer, RealtimeNotifications? notifications = null)
 {
     public async Task<StudentAssignmentResult> AssignAsync(string studentEmail, string teacherEmail, CancellationToken ct)
     {
@@ -38,6 +40,9 @@ public sealed class StudentAssignmentService(IStudentAssignmentStore store, ILoo
             await store.CreateConversationAsync(student.Value, teacher.Value, ct);
 
         await transaction.CommitAsync(ct);
+        if (notifications is not null)
+            await notifications.TeacherAssignmentChangedAsync(student.Value);
+
         return StudentAssignmentResult.Assigned;
     }
 }

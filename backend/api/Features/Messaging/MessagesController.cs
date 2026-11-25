@@ -1,3 +1,4 @@
+using PolskiYol.Features.Realtime;
 using PolskiYol.Data;
 using System.ComponentModel.DataAnnotations;
 using PolskiYol.Features;
@@ -12,10 +13,12 @@ using System.Security.Claims;
 public class MessagesController : ControllerBase
 {
     private readonly IApiData _data;
+    private readonly RealtimeNotifications _notifications;
 
-    public MessagesController(IApiData data)
+    public MessagesController(IApiData data, RealtimeNotifications notifications)
     {
         _data = data;
+        _notifications = notifications;
     }
 
     // GET /api/conversations/1/messages
@@ -114,6 +117,8 @@ public class MessagesController : ControllerBase
         _data.Add(message);
 
         await _data.SaveChangesAsync(ct);
+        var response = MessageResponse.FromMessage(message);
+        await _notifications.MessageCreatedAsync(response);
 
         return CreatedAtAction(
             nameof(GetMessage),
@@ -122,7 +127,7 @@ public class MessagesController : ControllerBase
                 conversationId,
                 id = message.Id
             },
-            MessageResponse.FromMessage(message));
+            response);
     }
 
     private IQueryable<Conversation> GetAccessibleConversations(Guid currentUserId) =>
