@@ -164,6 +164,7 @@ public sealed class AuthServiceTests
         public string Stamp { get; set; } = "stamp";
         public bool CanRefresh { get; set; } = true;
         public Task<ApplicationUser?> FindAsync(string email) => Task.FromResult(User.Email == email ? User : null);
+        public Task<ApplicationUser?> FindByIdAsync(string id) => Task.FromResult(User.Id.ToString() == id ? User : null);
         public Task<SignInResult> CheckPasswordAsync(ApplicationUser user, string password) => Task.FromResult(PasswordResult);
         public Task<bool> CanRefreshAsync(ApplicationUser user) => Task.FromResult(CanRefresh);
         public Task<string> GetSecurityStampAsync(ApplicationUser user) => Task.FromResult(Stamp);

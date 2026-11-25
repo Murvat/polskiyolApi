@@ -1,7 +1,6 @@
 
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using PolskiYol.Services;
@@ -12,19 +11,19 @@ using PolskiYol.DTOs;
 public class AuthController : ControllerBase
 {
     private readonly RefreshTokenService _refreshTokenService;
-    private readonly UserManager<ApplicationUser> _userManager;
+    private readonly IAccountAccess _accounts;
     private readonly AuthenticationService _authentication;
     private readonly IJwtService _jwtService;
     private readonly ILogger<AuthController> _logger;
 
     public AuthController(
-        UserManager<ApplicationUser> userManager,
+        IAccountAccess accounts,
         AuthenticationService authentication,
         IJwtService jwtService,
         RefreshTokenService refreshTokenService,
         ILogger<AuthController> logger)
     {
-        _userManager = userManager;
+        _accounts = accounts;
         _authentication = authentication;
         _jwtService = jwtService;
         _refreshTokenService = refreshTokenService;
@@ -71,7 +70,7 @@ public class AuthController : ControllerBase
         if (result is null)
             return Unauthorized();
 
-        var roles = await _userManager.GetRolesAsync(
+        var roles = await _accounts.GetRolesAsync(
             result.User);
 
         var accessToken = _jwtService.GenerateAccessToken(
@@ -125,7 +124,7 @@ public class AuthController : ControllerBase
             return Unauthorized();
         }
 
-        var roles = await _userManager.GetRolesAsync(user);
+        var roles = await _accounts.GetRolesAsync(user);
 
         var refreshToken = await _refreshTokenService.CreateAsync(user, cancellationToken);
         var accessToken = _jwtService.GenerateAccessToken(user, roles, refreshToken.SessionExpiresAtUtc);
@@ -185,13 +184,13 @@ public class AuthController : ControllerBase
     [HttpGet("me")]
     public async Task<IActionResult> GetCurrentUser()
     {
-        ApplicationUser? user =
-            await _userManager.GetUserAsync(User);
+        var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var user = id is null ? null : await _accounts.FindByIdAsync(id);
 
         if (user is null)
             return Unauthorized();
 
-        var roles = await _userManager.GetRolesAsync(user);
+        var roles = await _accounts.GetRolesAsync(user);
 
         return Ok(new
         {

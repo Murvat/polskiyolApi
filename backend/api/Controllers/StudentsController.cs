@@ -1,3 +1,4 @@
+using PolskiYol.Data;
 using Microsoft.AspNetCore.Mvc;
 using PolskiYol.Services;
 using Microsoft.EntityFrameworkCore;
@@ -9,11 +10,11 @@ using System.Security.Claims;
 [Route("api/students")]
 public class StudentsController : ControllerBase
 {
-    private readonly AppDbContext _context;
+    private readonly IApiData _data;
 
-    public StudentsController(AppDbContext context)
+    public StudentsController(IApiData data)
     {
-        _context = context;
+        _data = data;
     }
 
     [Authorize(Roles = "Student")]
@@ -26,8 +27,7 @@ public class StudentsController : ControllerBase
         if (!Guid.TryParse(userId, out var currentUserId))
             return Unauthorized();
 
-        var student = await _context.Students
-            .AsNoTracking()
+        var student = await _data.Query<Student>()
             .SingleOrDefaultAsync(s => s.UserId == currentUserId, cancellationToken);
 
         if (student is null)
@@ -63,8 +63,7 @@ public class StudentsController : ControllerBase
             return Unauthorized();
         }
 
-        var students = await _context.Students
-            .AsNoTracking()
+        var students = await _data.Query<Student>()
             .Where(s =>
                 s.Teacher != null &&
                 s.Teacher.UserId == currentUserId)
@@ -91,8 +90,7 @@ public class StudentsController : ControllerBase
             return Unauthorized();
         }
 
-        var student = await _context.Students
-            .AsNoTracking()
+        var student = await _data.Query<Student>()
             .SingleOrDefaultAsync(s => s.Id == id);
 
         if (student is null)
@@ -102,7 +100,7 @@ public class StudentsController : ControllerBase
 
         if (User.IsInRole("Teacher"))
         {
-            bool isAssignedTeacher = await ProfileAccess.AssignedTeacher(_context.Teachers, student.TeacherId, currentUserId).AnyAsync();
+            bool isAssignedTeacher = await ProfileAccess.AssignedTeacher(_data.Query<Teacher>(), student.TeacherId, currentUserId).AnyAsync();
 
             if (!isAssignedTeacher)
             {

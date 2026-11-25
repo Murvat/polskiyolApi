@@ -1,9 +1,8 @@
+using PolskiYol.Data;
 using System.ComponentModel.DataAnnotations;
 using PolskiYol.Features;
 using PolskiYol.Features.Materials;
 using Azure;
-using Azure.Storage.Blobs;
-using Azure.Storage.Blobs.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
@@ -15,21 +14,18 @@ using Microsoft.EntityFrameworkCore;
 public class MaterialsController : ControllerBase
 {
 
-    private readonly AppDbContext _context;
-    private readonly BlobContainerClient _container;
+    private readonly IApiData _data;
+    private readonly IMaterialBlobStore _blobs;
     private readonly ILogger<MaterialsController> _logger;
-    private readonly MaterialBlobCleanup _blobCleanup;
 
     public MaterialsController(
-        AppDbContext context,
-        BlobContainerClient container,
-        ILogger<MaterialsController> logger,
-        MaterialBlobCleanup blobCleanup)
+        IApiData data,
+        IMaterialBlobStore blobs,
+        ILogger<MaterialsController> logger)
     {
-        _context = context;
-        _container = container;
+        _data = data;
+        _blobs = blobs;
         _logger = logger;
-        _blobCleanup = blobCleanup;
     }
 
     // GET /api/materials
@@ -92,8 +88,7 @@ public class MaterialsController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        var teacher = await _context.Teachers
-            .AsNoTracking()
+        var teacher = await _data.Query<Teacher>()
             .SingleOrDefaultAsync(t => t.UserId == currentUserId, ct);
 
         if (teacher is null)
@@ -106,7 +101,6 @@ public class MaterialsController : ControllerBase
             return BadRequest(error);
 
         var storageKey = $"pdf/{Guid.NewGuid():N}.pdf";
-        var blob = _container.GetBlobClient(storageKey);
 
         var material = new Material
         {
@@ -120,21 +114,12 @@ public class MaterialsController : ControllerBase
         {
             await using (var stream = file.OpenReadStream())
             {
-                await blob.UploadAsync(
-                    stream,
-                    new BlobUploadOptions
-                    {
-                        HttpHeaders = new BlobHttpHeaders
-                        {
-                            ContentType = "application/pdf"
-                        }
-                    },
-                    ct);
+                await _blobs.UploadAsync(storageKey, stream, "application/pdf", ct);
             }
 
-            _context.Materials.Add(material);
-            await _context.SaveChangesAsync(ct);
-        }, () => _blobCleanup.DeleteOrQueueAsync(_container, storageKey));
+            _data.Add(material);
+            await _data.SaveChangesAsync(ct);
+        }, () => _blobs.DeleteOrQueueAsync(storageKey));
 
         return CreatedAtAction(
             nameof(GetMaterial),
@@ -158,8 +143,7 @@ public class MaterialsController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        var material = await _context.Materials
-            .AsTracking()
+        var material = await _data.Query<Material>(track: true)
             .SingleOrDefaultAsync(m =>
                 m.Id == id &&
                 m.Teacher.UserId == currentUserId, ct);
@@ -174,7 +158,6 @@ public class MaterialsController : ControllerBase
             return BadRequest(error);
 
         var storageKey = $"covers/{Guid.NewGuid():N}{extension}";
-        var blob = _container.GetBlobClient(storageKey);
 
         var previousCoverKey = material.CoverStorageKey;
 
@@ -182,23 +165,14 @@ public class MaterialsController : ControllerBase
         {
             await using (var stream = file!.OpenReadStream())
             {
-                await blob.UploadAsync(
-                    stream,
-                    new BlobUploadOptions
-                    {
-                        HttpHeaders = new BlobHttpHeaders
-                        {
-                            ContentType = contentType
-                        }
-                    },
-                    ct);
+                await _blobs.UploadAsync(storageKey, stream, contentType!, ct);
             }
 
             material.CoverStorageKey = storageKey;
-            await _context.SaveChangesAsync(ct);
-        }, () => _blobCleanup.DeleteOrQueueAsync(_container, storageKey));
+            await _data.SaveChangesAsync(ct);
+        }, () => _blobs.DeleteOrQueueAsync(storageKey));
 
-        await _blobCleanup.DeleteOrQueueAsync(_container, previousCoverKey);
+        await _blobs.DeleteOrQueueAsync(previousCoverKey);
 
         return NoContent();
     }
@@ -225,7 +199,7 @@ public class MaterialsController : ControllerBase
 
         try
         {
-            var stream = await MaterialService.OpenDownloadAsync(material?.FileStorageKey, OpenBlobAsync, ct);
+            var stream = await MaterialService.OpenDownloadAsync(material?.FileStorageKey, _blobs.OpenAsync, ct);
             if (stream is null)
                 return NotFound();
 
@@ -258,7 +232,7 @@ public class MaterialsController : ControllerBase
 
         try
         {
-            var stream = await MaterialService.OpenDownloadAsync(storageKey, OpenBlobAsync, ct);
+            var stream = await MaterialService.OpenDownloadAsync(storageKey, _blobs.OpenAsync, ct);
             if (stream is null)
                 return NotFound();
 
@@ -289,8 +263,7 @@ public class MaterialsController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        var material = await _context.Materials
-            .AsTracking()
+        var material = await _data.Query<Material>(track: true)
             .SingleOrDefaultAsync(m =>
                 m.Id == id &&
                 m.Teacher.UserId == currentUserId, ct);
@@ -298,21 +271,15 @@ public class MaterialsController : ControllerBase
         if (material == null)
             return NotFound();
 
-        _context.Materials.Remove(material);
-        await _context.SaveChangesAsync(ct);
+        _data.Remove(material);
+        await _data.SaveChangesAsync(ct);
 
-        await _blobCleanup.DeleteOrQueueAsync(_container, material.FileStorageKey);
-        await _blobCleanup.DeleteOrQueueAsync(_container, material.CoverStorageKey);
+        await _blobs.DeleteOrQueueAsync(material.FileStorageKey);
+        await _blobs.DeleteOrQueueAsync(material.CoverStorageKey);
 
         return NoContent();
     }
 
-    private async Task<Stream?> OpenBlobAsync(string storageKey, CancellationToken ct)
-    {
-        var download = await _container.GetBlobClient(storageKey).DownloadStreamingAsync(cancellationToken: ct);
-        return download.Value.Content;
-    }
-
     private IQueryable<Material> GetAccessibleMaterials(Guid currentUserId) =>
-        MaterialService.GetAccessibleMaterials(currentUserId, User, _context.Materials.AsNoTracking(), _context.Students);
+        MaterialService.GetAccessibleMaterials(currentUserId, User, _data.Query<Material>(), _data.Query<Student>());
 }

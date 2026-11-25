@@ -1,3 +1,4 @@
+using PolskiYol.Data;
 using PolskiYol.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -9,11 +10,11 @@ using System.Security.Claims;
 [Route("api/[controller]")]
 public class TeachersController : ControllerBase
 {
-    private readonly AppDbContext _context;
+    private readonly IApiData _data;
 
-    public TeachersController(AppDbContext context)
+    public TeachersController(IApiData data)
     {
-        _context = context;
+        _data = data;
     }
 
     [HttpGet("{id}")]
@@ -26,8 +27,7 @@ public class TeachersController : ControllerBase
             return Unauthorized();
         }
 
-        var teacher = await _context.Teachers
-            .AsNoTracking()
+        var teacher = await _data.Query<Teacher>()
             .FirstOrDefaultAsync(t => t.Id == id);
 
         if (teacher is null)
@@ -44,7 +44,7 @@ public class TeachersController : ControllerBase
         }
         else if (User.IsInRole("Student"))
         {
-            bool isAssignedStudent = await ProfileAccess.AssignedStudent(_context.Students, id, currentUserId).AnyAsync();
+            bool isAssignedStudent = await ProfileAccess.AssignedStudent(_data.Query<Student>(), id, currentUserId).AnyAsync();
 
             if (!isAssignedStudent)
             {
