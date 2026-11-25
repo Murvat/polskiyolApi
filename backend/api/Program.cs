@@ -8,6 +8,9 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.Extensions.Options;
 using System.Security.Claims;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
+using PolskiYol.Features.Materials;
 using PolskiYol.Configuration;
 using PolskiYol.Services;
 
@@ -23,6 +26,22 @@ string connectionString =
 builder.Services.AddOpenApi();
 builder.Services.AddControllers();
 builder.Services.AddProblemDetails();
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = (context, _) =>
+    {
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+            context.HttpContext.Response.Headers.RetryAfter =
+                Math.Ceiling(retryAfter.TotalSeconds).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        return ValueTask.CompletedTask;
+    };
+
+    AddAuthRateLimit(options, "auth-login", 10);
+    AddAuthRateLimit(options, "auth-registration", 10);
+    AddAuthRateLimit(options, "auth-refresh", 30);
+});
 
 // Authorization
 builder.Services.AddAuthorization(options =>
@@ -65,6 +84,9 @@ builder.Services.AddSingleton(sp =>
 
     return serviceClient.GetBlobContainerClient("materials");
 });
+
+builder.Services.AddSingleton<MaterialBlobCleanup>();
+builder.Services.AddHostedService<MaterialBlobCleanup>(sp => sp.GetRequiredService<MaterialBlobCleanup>());
 
 // JWT configuration and validation
 builder.Services.AddOptions<JwtOptions>()
@@ -147,7 +169,7 @@ builder.Services.AddOptions<JwtBearerOptions>(
                 SecurityAlgorithms.HmacSha256
             },
 
-            ClockSkew = TimeSpan.FromSeconds(30),
+            ClockSkew = TimeSpan.Zero,
 
             NameClaimType = ClaimTypes.Name,
             RoleClaimType = ClaimTypes.Role
@@ -206,11 +228,25 @@ app.UseExceptionHandler(errorApp =>
 });
 app.UseHttpsRedirection();
 app.UseStatusCodePages();
+app.UseRouting();
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
 
 app.Run();
+
+static void AddAuthRateLimit(RateLimiterOptions options, string policy, int permitLimit)
+{
+    options.AddPolicy(policy, context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.MapToIPv6().ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = permitLimit,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        }));
+}
 
 public partial class Program { }

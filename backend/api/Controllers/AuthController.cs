@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using PolskiYol.Services;
 using PolskiYol.DTOs;
 
@@ -15,22 +16,26 @@ public class AuthController : ControllerBase
     private readonly SignInManager<ApplicationUser> _signInManager;
     private readonly IJwtService _jwtService;
     private readonly AppDbContext _context;
+    private readonly ILogger<AuthController> _logger;
 
     public AuthController(
         UserManager<ApplicationUser> userManager,
         SignInManager<ApplicationUser> signInManager,
         AppDbContext context,
         IJwtService jwtService,
-        RefreshTokenService refreshTokenService)
+        RefreshTokenService refreshTokenService,
+        ILogger<AuthController> logger)
     {
         _userManager = userManager;
         _signInManager = signInManager;
         _context = context;
         _jwtService = jwtService;
         _refreshTokenService = refreshTokenService;
+        _logger = logger;
     }
 
     [AllowAnonymous]
+    [EnableRateLimiting("auth-registration")]
     [HttpPost("register/student")]
     public async Task<IActionResult> RegisterStudent(
         [FromBody] RegisterDto dto)
@@ -73,6 +78,7 @@ public class AuthController : ControllerBase
     }
 
     [AllowAnonymous]
+    [EnableRateLimiting("auth-registration")]
     [HttpPost("register/teacher")]
     public async Task<IActionResult> RegisterTeacher(
         [FromBody] RegisterDto dto)
@@ -115,6 +121,7 @@ public class AuthController : ControllerBase
     }
 
     [AllowAnonymous]
+    [EnableRateLimiting("auth-refresh")]
     [HttpPost("refresh")]
     public async Task<ActionResult<AuthResponse>> Refresh(
         CancellationToken cancellationToken)
@@ -140,7 +147,14 @@ public class AuthController : ControllerBase
 
         var accessToken = _jwtService.GenerateAccessToken(
             result.User,
-            roles);
+            roles,
+            result.SessionExpiresAtUtc);
+
+        if (accessToken is null)
+        {
+            DeleteRefreshTokenCookie();
+            return Unauthorized();
+        }
 
         SetRefreshTokenCookie(
             result.Token,
@@ -165,11 +179,14 @@ public class AuthController : ControllerBase
             });
     }
     [AllowAnonymous]
+    [EnableRateLimiting("auth-login")]
     [HttpPost("login")]
     public async Task<ActionResult<AuthResponse>> Login(
     [FromBody] LoginDto dto,
     CancellationToken cancellationToken)
     {
+        Response.Headers.CacheControl = "no-store";
+
         ApplicationUser? user =
             await _userManager.FindByEmailAsync(dto.Email);
 
@@ -183,21 +200,24 @@ public class AuthController : ControllerBase
                 lockoutOnFailure: true);
 
         if (!result.Succeeded)
+        {
+            if (result.IsLockedOut)
+                _logger.LogWarning("Login rejected due to account lockout. TraceId {TraceId}", HttpContext.TraceIdentifier);
+
             return Unauthorized();
+        }
 
         if (await _userManager.GetTwoFactorEnabledAsync(user))
             return Unauthorized();
 
         var roles = await _userManager.GetRolesAsync(user);
 
-        var accessToken = _jwtService.GenerateAccessToken(
-            user,
-            roles);
+        var refreshToken = await _refreshTokenService.CreateAsync(user, cancellationToken);
+        var accessToken = _jwtService.GenerateAccessToken(user, roles, refreshToken.SessionExpiresAtUtc);
 
-        var refreshToken =
-            await _refreshTokenService.CreateAsync(
-                user,
-                cancellationToken);
+        if (accessToken is null)
+            return Unauthorized();
+
         SetRefreshTokenCookie(
             refreshToken.Token,
             refreshToken.ExpiresAtUtc);

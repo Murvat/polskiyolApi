@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+using PolskiYol.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
@@ -19,16 +21,14 @@ public class MessagesController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<List<MessageResponse>>> GetMessages(
         int conversationId,
-        [FromQuery] int limit = 50,
+        [FromQuery, Range(1, 100)] int limit = 50,
+        [FromQuery, Range(1, int.MaxValue)] int? beforeId = null,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
-
-        if (limit < 1 || limit > 100)
-            return BadRequest("Limit must be between 1 and 100.");
 
         var conversations = GetAccessibleConversations(currentUserId)
             .Where(c => c.Id == conversationId);
@@ -40,9 +40,10 @@ public class MessagesController : ControllerBase
             .AsNoTracking()
             .Where(m =>
                 m.ConversationId == conversationId &&
+                (!beforeId.HasValue || m.Id < beforeId.Value) &&
                 conversations.Any(c => c.Id == m.ConversationId))
             .OrderByDescending(m => m.Id)
-            .Take(limit)
+            .Take(limit + 1)
             .Select(m => new MessageResponse
             {
                 Id = m.Id,
@@ -53,6 +54,7 @@ public class MessagesController : ControllerBase
             })
             .ToListAsync(ct);
 
+        CursorPage.SetNextCursor(messages, limit, m => m.Id, Response);
         messages.Reverse();
 
         return Ok(messages);

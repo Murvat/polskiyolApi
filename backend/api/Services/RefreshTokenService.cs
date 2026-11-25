@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.SqlClient;
 using System.Data;
+using System.Diagnostics;
 
 namespace PolskiYol.Services;
 
@@ -14,17 +15,20 @@ public sealed class RefreshTokenService
     private readonly SignInManager<ApplicationUser> _signInManager;
     private readonly AppDbContext _context;
     private readonly JwtOptions _jwtOptions;
+    private readonly ILogger<RefreshTokenService> _logger;
 
     public RefreshTokenService(
         AppDbContext context,
         IOptions<JwtOptions> jwtOptions,
         UserManager<ApplicationUser> userManager,
-        SignInManager<ApplicationUser> signInManager)
+        SignInManager<ApplicationUser> signInManager,
+        ILogger<RefreshTokenService> logger)
     {
         _context = context;
         _jwtOptions = jwtOptions.Value;
         _userManager = userManager;
         _signInManager = signInManager;
+        _logger = logger;
     }
 
     public async Task<RefreshTokenResult> CreateAsync(
@@ -64,9 +68,7 @@ public sealed class RefreshTokenService
 
         await _context.SaveChangesAsync(cancellationToken);
 
-        return new RefreshTokenResult(
-            token,
-            expiresAt);
+        return new RefreshTokenResult(token, expiresAt, sessionExpiresAt);
     }
     private DateTime CalculateExpiration(
     DateTime now,
@@ -95,28 +97,21 @@ public sealed class RefreshTokenService
                     token,
                     cancellationToken);
             }
-            catch (DbUpdateConcurrencyException)
-                when (attempt < maxAttempts)
+            catch (Exception ex) when (ex is DbUpdateConcurrencyException
+                or DbUpdateException { InnerException: SqlException { Number: 1205 } }
+                or SqlException { Number: 1205 })
             {
-                _context.ChangeTracker.Clear();
-            }
-            catch (DbUpdateException ex)
-                when (ex.InnerException is SqlException
-                { Number: 1205 } &&
-                      attempt < maxAttempts)
-            {
-                _context.ChangeTracker.Clear();
-            }
-            catch (SqlException ex)
-                when (ex.Number == 1205 &&
-                      attempt < maxAttempts)
-            {
-                _context.ChangeTracker.Clear();
-            }
+                if (attempt == maxAttempts)
+                {
+                    _logger.LogWarning(
+                        "Refresh token rotation exhausted {Attempts} attempts. TraceId {TraceId}",
+                        attempt, Activity.Current?.TraceId);
+                    throw;
+                }
 
-            await Task.Delay(
-                Random.Shared.Next(30, 101) * attempt,
-                cancellationToken);
+                _context.ChangeTracker.Clear();
+                await Task.Delay(Random.Shared.Next(30, 101) * attempt, cancellationToken);
+            }
         }
 
         throw new InvalidOperationException(
@@ -142,10 +137,9 @@ public sealed class RefreshTokenService
         if (familyId is null)
             return;
 
-        await RevokeFamilyAsync(
-            familyId.Value,
-            DateTime.UtcNow,
-            cancellationToken);
+        var revoked = await RevokeFamilyAsync(familyId.Value, DateTime.UtcNow, cancellationToken);
+        if (revoked > 0)
+            _logger.LogInformation("Refresh token family revoked on logout. TraceId {TraceId}", Activity.Current?.TraceId);
     }
 
     private async Task<RefreshTokenRotationResult?> RotateCoreAsync(
@@ -183,13 +177,15 @@ public sealed class RefreshTokenService
         {
             if (existingToken.ReplacedByTokenId is not null)
             {
-                await RevokeFamilyAsync(
+                var revoked = await RevokeFamilyAsync(
                     existingToken.FamilyId,
                     now,
                     cancellationToken);
 
-                await transaction.CommitAsync(
-                    cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                _logger.LogWarning(
+                    "Refresh token reuse detected. Revoked {TokenCount} tokens. TraceId {TraceId}",
+                    revoked, Activity.Current?.TraceId);
             }
 
             return null;
@@ -205,6 +201,8 @@ public sealed class RefreshTokenService
                 cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
+            _logger.LogInformation(
+                "Expired refresh token family revoked. TraceId {TraceId}", Activity.Current?.TraceId);
 
             return null;
         }
@@ -220,8 +218,10 @@ public sealed class RefreshTokenService
                 now,
                 cancellationToken);
 
-            await transaction.CommitAsync(
-                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            _logger.LogInformation(
+                "Refresh token family revoked because the account is ineligible. TraceId {TraceId}",
+                Activity.Current?.TraceId);
 
             return null;
         }
@@ -242,8 +242,10 @@ public sealed class RefreshTokenService
                 now,
                 cancellationToken);
 
-            await transaction.CommitAsync(
-                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            _logger.LogInformation(
+                "Refresh token family revoked after a security stamp change. TraceId {TraceId}",
+                Activity.Current?.TraceId);
 
             return null;
         }
@@ -283,7 +285,8 @@ public sealed class RefreshTokenService
         return new RefreshTokenRotationResult(
             existingToken.User,
             newToken,
-            expiresAt);
+            expiresAt,
+            existingToken.SessionExpiresAtUtc);
     }
 
     private async Task<bool> CanRefreshAsync(
@@ -302,12 +305,12 @@ public sealed class RefreshTokenService
         return true;
     }
 
-    private async Task RevokeFamilyAsync(
+    private Task<int> RevokeFamilyAsync(
         Guid familyId,
         DateTime revokedAtUtc,
         CancellationToken cancellationToken)
     {
-        await _context.RefreshTokens
+        return _context.RefreshTokens
             .Where(t =>
                 t.FamilyId == familyId &&
                 t.RevokedAtUtc == null)

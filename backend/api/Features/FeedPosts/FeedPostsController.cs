@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+using PolskiYol.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
@@ -18,7 +20,9 @@ public class FeedPostsController : ControllerBase
     // GET /api/feed-posts
     [HttpGet]
     public async Task<ActionResult<List<FeedPostResponse>>> GetPosts(
-        CancellationToken cancellationToken)
+        [FromQuery, Range(1, 100)] int limit = 50,
+        [FromQuery, Range(1, int.MaxValue)] int? beforeId = null,
+        CancellationToken cancellationToken = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
@@ -26,8 +30,12 @@ public class FeedPostsController : ControllerBase
             return Unauthorized();
 
         var posts = await GetAccessiblePosts(currentUserId)
-            .OrderByDescending(p => p.CreatedAt)
+            .Where(p => !beforeId.HasValue || p.Id < beforeId.Value)
+            .OrderByDescending(p => p.Id)
+            .Take(limit + 1)
             .ToListAsync(cancellationToken);
+
+        CursorPage.SetNextCursor(posts, limit, p => p.Id, Response);
 
         var response = posts
             .Select(FeedPostResponse.FromFeedPost)

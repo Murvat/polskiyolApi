@@ -5,6 +5,7 @@ public class MaterialResponse
 
     public string FileName { get; set; } = string.Empty;
     public string? Description { get; set; }
+    public bool HasCover { get; set; }
 
     public static MaterialResponse FromMaterial(Material material)
     {
@@ -13,7 +14,8 @@ public class MaterialResponse
             Id = material.Id,
             TeacherId = material.TeacherId,
             FileName = material.FileName,
-            Description = material.Description
+            Description = material.Description,
+            HasCover = !string.IsNullOrEmpty(material.CoverStorageKey)
         };
     }
 }

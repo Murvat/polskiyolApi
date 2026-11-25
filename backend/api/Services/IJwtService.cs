@@ -4,7 +4,8 @@ namespace PolskiYol.Services;
 
 public interface IJwtService
 {
-    AccessTokenResult GenerateAccessToken(
+    AccessTokenResult? GenerateAccessToken(
         ApplicationUser user,
-        IEnumerable<string> roles);
+        IEnumerable<string> roles,
+        DateTime sessionExpiresAtUtc);
 }

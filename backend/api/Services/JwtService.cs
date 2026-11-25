@@ -16,14 +16,19 @@ public sealed class JwtService : IJwtService
         _jwtOptions = jwtOptions.Value;
     }
 
-    public AccessTokenResult GenerateAccessToken(
+    public AccessTokenResult? GenerateAccessToken(
         ApplicationUser user,
-        IEnumerable<string> roles)
+        IEnumerable<string> roles,
+        DateTime sessionExpiresAtUtc)
     {
         var now = DateTime.UtcNow;
+        var configuredExpiration = now.AddMinutes(_jwtOptions.AccessTokenExpirationMinutes);
+        var deadline = configuredExpiration < sessionExpiresAtUtc ? configuredExpiration : sessionExpiresAtUtc;
 
-        var expiresAt = now.AddMinutes(
-            _jwtOptions.AccessTokenExpirationMinutes);
+        // JWT timestamps are encoded as whole seconds.
+        var expiresAt = DateTimeOffset.FromUnixTimeSeconds(new DateTimeOffset(DateTime.SpecifyKind(deadline, DateTimeKind.Utc)).ToUnixTimeSeconds()).UtcDateTime;
+        if (expiresAt <= now)
+            return null;
 
         var claims = new List<Claim>
         {

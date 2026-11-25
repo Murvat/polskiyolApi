@@ -1,3 +1,6 @@
+using System.ComponentModel.DataAnnotations;
+using PolskiYol.Features;
+using PolskiYol.Features.Materials;
 using Azure;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
@@ -16,21 +19,26 @@ public class MaterialsController : ControllerBase
     private readonly AppDbContext _context;
     private readonly BlobContainerClient _container;
     private readonly ILogger<MaterialsController> _logger;
+    private readonly MaterialBlobCleanup _blobCleanup;
 
     public MaterialsController(
         AppDbContext context,
         BlobContainerClient container,
-        ILogger<MaterialsController> logger)
+        ILogger<MaterialsController> logger,
+        MaterialBlobCleanup blobCleanup)
     {
         _context = context;
         _container = container;
         _logger = logger;
+        _blobCleanup = blobCleanup;
     }
 
     // GET /api/materials
     [HttpGet]
     public async Task<ActionResult<List<MaterialResponse>>> GetMaterials(
-        CancellationToken ct)
+        [FromQuery, Range(1, 100)] int limit = 50,
+        [FromQuery, Range(1, int.MaxValue)] int? beforeId = null,
+        CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
@@ -38,7 +46,12 @@ public class MaterialsController : ControllerBase
             return Unauthorized();
 
         var materials = await GetAccessibleMaterials(currentUserId)
+            .Where(m => !beforeId.HasValue || m.Id < beforeId.Value)
+            .OrderByDescending(m => m.Id)
+            .Take(limit + 1)
             .ToListAsync(ct);
+
+        CursorPage.SetNextCursor(materials, limit, m => m.Id, Response);
 
         return Ok(materials
             .Select(MaterialResponse.FromMaterial)
@@ -138,7 +151,7 @@ public class MaterialsController : ControllerBase
         }
         catch
         {
-            await DeleteBlobBestEffortAsync(storageKey);
+            await _blobCleanup.DeleteOrQueueAsync(_container, storageKey);
             throw;
         }
 
@@ -229,11 +242,11 @@ public class MaterialsController : ControllerBase
         }
         catch
         {
-            await DeleteBlobBestEffortAsync(storageKey);
+            await _blobCleanup.DeleteOrQueueAsync(_container, storageKey);
             throw;
         }
 
-        await DeleteBlobBestEffortAsync(previousCoverKey);
+        await _blobCleanup.DeleteOrQueueAsync(_container, previousCoverKey);
 
         return NoContent();
     }
@@ -287,6 +300,40 @@ public class MaterialsController : ControllerBase
         }
     }
 
+    [HttpGet("{id:int}/cover")]
+    public async Task<IActionResult> GetCover(int id, CancellationToken ct)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userId, out var currentUserId))
+            return Unauthorized();
+
+        var storageKey = await GetAccessibleMaterials(currentUserId)
+            .Where(m => m.Id == id)
+            .Select(m => m.CoverStorageKey)
+            .SingleOrDefaultAsync(ct);
+
+        if (string.IsNullOrEmpty(storageKey))
+            return NotFound();
+
+        try
+        {
+            var download = await _container.GetBlobClient(storageKey)
+                .DownloadStreamingAsync(cancellationToken: ct);
+            var contentType = storageKey.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                ? "image/png"
+                : "image/jpeg";
+
+            Response.Headers.CacheControl = "private, no-store";
+            Response.Headers["X-Content-Type-Options"] = "nosniff";
+            return File(download.Value.Content, contentType);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            _logger.LogError(ex, "Cover blob missing for material {MaterialId}", id);
+            return Problem(detail: "The stored cover is unavailable.", statusCode: 500);
+        }
+    }
+
     // DELETE /api/materials/5
     [Authorize(Roles = "Teacher")]
     [HttpDelete("{id:int}")]
@@ -311,8 +358,8 @@ public class MaterialsController : ControllerBase
         _context.Materials.Remove(material);
         await _context.SaveChangesAsync(ct);
 
-        await DeleteBlobBestEffortAsync(material.FileStorageKey);
-        await DeleteBlobBestEffortAsync(material.CoverStorageKey);
+        await _blobCleanup.DeleteOrQueueAsync(_container, material.FileStorageKey);
+        await _blobCleanup.DeleteOrQueueAsync(_container, material.CoverStorageKey);
 
         return NoContent();
     }
@@ -352,25 +399,5 @@ public class MaterialsController : ControllerBase
         await stream.ReadExactlyAsync(header, ct);
 
         return header.SequenceEqual(signature);
-    }
-
-    private async Task DeleteBlobBestEffortAsync(string? storageKey)
-    {
-        if (string.IsNullOrWhiteSpace(storageKey))
-            return;
-
-        try
-        {
-            await _container.GetBlobClient(storageKey)
-                .DeleteIfExistsAsync(
-                    cancellationToken: CancellationToken.None);
-        }
-        catch (RequestFailedException ex)
-        {
-            _logger.LogWarning(
-                ex,
-                "Could not delete blob {StorageKey}",
-                storageKey);
-        }
     }
 }
