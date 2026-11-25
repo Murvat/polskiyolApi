@@ -24,7 +24,6 @@ jobs:
         ports:
           - 1433/tcp
     env:
-      ConnectionStrings__DefaultConnection: Server=127.0.0.1,${{ job.services.sqlserver.ports[1433] }};Database=PolskiYolIntegration;User ID=sa;Password=Integration-Sql_2026!;TrustServerCertificate=True;Connect Timeout=5
       Jwt__Issuer: integration-tests
       Jwt__Audience: integration-tests
       Jwt__AccessTokenExpirationMinutes: '5'
@@ -49,6 +48,8 @@ jobs:
           docker logs "$SQL_CONTAINER"
           exit 1
       - name: Run integration tests
+        env:
+          ConnectionStrings__DefaultConnection: Server=127.0.0.1,${{ job.services.sqlserver.ports[1433] }};Database=PolskiYolIntegration;User ID=sa;Password=Integration-Sql_2026!;TrustServerCertificate=True;Connect Timeout=5
         run: |
           export Jwt__SigningKey="$(openssl rand -base64 32)"
           dotnet test backend/api.IntegrationTests/api.IntegrationTests.csproj --configuration Release
