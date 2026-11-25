@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Azure;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using PolskiYol.Features;
 using PolskiYol.Features.Materials;
@@ -26,9 +27,11 @@ public sealed class FeatureServiceTests
         Assert.Equal(StudentAssignmentResult.Assigned, await service.AssignAsync("student@example.test", "first@example.test", default));
         Assert.Equal(StudentAssignmentResult.Assigned, await service.AssignAsync("student@example.test", "FIRST@example.test", default));
         Assert.Single(store.Conversations);
+        Assert.Equal(1, store.ConversationCreates);
         Assert.Equal(StudentAssignmentResult.Assigned, await service.AssignAsync("student@example.test", "second@example.test", default));
         Assert.Equal(3, store.TeacherId);
         Assert.Equal(2, store.Conversations.Count);
+        Assert.Equal(2, store.ConversationCreates);
     }
 
     [Fact]
@@ -140,6 +143,23 @@ public sealed class FeatureServiceTests
         Assert.Empty(MaterialService.GetAccessibleMaterials(Guid.NewGuid(), Principal("Student"), items, students));
     }
 
+    [Fact]
+    public async Task MaterialDownloadOnlyOpensStorageForAnAuthorizedKey()
+    {
+        using var expected = new MemoryStream("%PDF-"u8.ToArray());
+        var opened = new List<string>();
+        Task<Stream?> Open(string storageKey, CancellationToken ct)
+        {
+            opened.Add(storageKey);
+            return Task.FromResult<Stream?>(expected);
+        }
+
+        Assert.Null(await MaterialService.OpenDownloadAsync(null, Open, default));
+        Assert.Empty(opened);
+        Assert.Same(expected, await MaterialService.OpenDownloadAsync("pdf/lesson.pdf", Open, default));
+        Assert.Equal("pdf/lesson.pdf", Assert.Single(opened));
+    }
+
     [Theory]
     [InlineData(503, 2, 3)]
     [InlineData(503, 3, 3)]
@@ -225,11 +245,25 @@ public sealed class FeatureServiceTests
         public Task<int?> FindTeacherAsync(string? name, CancellationToken ct) =>
             Task.FromResult<int?>(name switch { "FIRST@EXAMPLE.TEST" => 2, "SECOND@EXAMPLE.TEST" => 3, _ => null });
 
-        public Task<bool> AssignAsync(int studentId, int teacherId, CancellationToken ct)
+        public int ConversationCreates { get; private set; }
+
+        public Task<IDbContextTransaction> BeginAsync(CancellationToken ct) =>
+            Task.FromResult<IDbContextTransaction>(new FakeTransaction(() => { }));
+
+        public Task<bool> UpdateTeacherAsync(int studentId, int teacherId, CancellationToken ct)
         {
             TeacherId = teacherId;
-            Conversations.Add((studentId, teacherId));
             return Task.FromResult(true);
+        }
+
+        public Task<bool> ConversationExistsAsync(int studentId, int teacherId, CancellationToken ct) =>
+            Task.FromResult(Conversations.Contains((studentId, teacherId)));
+
+        public Task CreateConversationAsync(int studentId, int teacherId, CancellationToken ct)
+        {
+            ConversationCreates++;
+            Conversations.Add((studentId, teacherId));
+            return Task.CompletedTask;
         }
     }
 }

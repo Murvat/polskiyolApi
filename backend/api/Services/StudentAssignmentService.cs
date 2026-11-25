@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace PolskiYol.Services;
 
@@ -9,7 +10,10 @@ public interface IStudentAssignmentStore
 {
     Task<int?> FindStudentAsync(string? userName, CancellationToken ct);
     Task<int?> FindTeacherAsync(string? userName, CancellationToken ct);
-    Task<bool> AssignAsync(int studentId, int teacherId, CancellationToken ct);
+    Task<IDbContextTransaction> BeginAsync(CancellationToken ct);
+    Task<bool> UpdateTeacherAsync(int studentId, int teacherId, CancellationToken ct);
+    Task<bool> ConversationExistsAsync(int studentId, int teacherId, CancellationToken ct);
+    Task CreateConversationAsync(int studentId, int teacherId, CancellationToken ct);
 }
 
 public sealed class StudentAssignmentService(IStudentAssignmentStore store, ILookupNormalizer normalizer)
@@ -24,8 +28,17 @@ public sealed class StudentAssignmentService(IStudentAssignmentStore store, ILoo
         if (teacher is null)
             return StudentAssignmentResult.TeacherMissing;
 
-        return await store.AssignAsync(student.Value, teacher.Value, ct)
-            ? StudentAssignmentResult.Assigned : StudentAssignmentResult.StudentMissing;
+        await using var transaction = await store.BeginAsync(ct);
+
+        // Update first so requests for the same student serialize before looking up the conversation.
+        if (!await store.UpdateTeacherAsync(student.Value, teacher.Value, ct))
+            return StudentAssignmentResult.StudentMissing;
+
+        if (!await store.ConversationExistsAsync(student.Value, teacher.Value, ct))
+            await store.CreateConversationAsync(student.Value, teacher.Value, ct);
+
+        await transaction.CommitAsync(ct);
+        return StudentAssignmentResult.Assigned;
     }
 }
 
@@ -37,38 +50,20 @@ public sealed class StudentAssignmentStore(AppDbContext context) : IStudentAssig
     public Task<int?> FindTeacherAsync(string? userName, CancellationToken ct) =>
         context.Teachers.Where(t => t.User.NormalizedUserName == userName).Select(t => (int?)t.Id).SingleOrDefaultAsync(ct);
 
-    public async Task<bool> AssignAsync(int studentId, int teacherId, CancellationToken ct)
+    public Task<IDbContextTransaction> BeginAsync(CancellationToken ct) =>
+        context.Database.BeginTransactionAsync(ct);
+
+    public async Task<bool> UpdateTeacherAsync(int studentId, int teacherId, CancellationToken ct) =>
+        await context.Students.Where(student => student.Id == studentId)
+            .ExecuteUpdateAsync(update => update.SetProperty(student => student.TeacherId, (int?)teacherId), ct) > 0;
+
+    public Task<bool> ConversationExistsAsync(int studentId, int teacherId, CancellationToken ct) =>
+        context.Conversations.AnyAsync(
+            c => c.StudentId == studentId && c.TeacherId == teacherId, ct);
+
+    public async Task CreateConversationAsync(int studentId, int teacherId, CancellationToken ct)
     {
-        await using var transaction =
-            await context.Database.BeginTransactionAsync(ct);
-
-        // Update first so assignment requests for the same student serialize
-        // before they check whether the conversation already exists.
-        var updated = await context.Students
-            .Where(s => s.Id == studentId)
-            .ExecuteUpdateAsync(
-                setters => setters.SetProperty(s => s.TeacherId, (int?)teacherId),
-                ct);
-
-        if (updated == 0)
-            return false;
-
-        var conversationExists = await context.Conversations.AnyAsync(
-            c => c.StudentId == studentId && c.TeacherId == teacherId,
-            ct);
-
-        if (!conversationExists)
-        {
-            context.Conversations.Add(new Conversation
-            {
-                StudentId = studentId,
-                TeacherId = teacherId
-            });
-
-            await context.SaveChangesAsync(ct);
-        }
-
-        await transaction.CommitAsync(ct);
-        return true;
+        context.Conversations.Add(new Conversation { StudentId = studentId, TeacherId = teacherId });
+        await context.SaveChangesAsync(ct);
     }
 }

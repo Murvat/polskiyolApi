@@ -223,21 +223,13 @@ public class MaterialsController : ControllerBase
             })
             .FirstOrDefaultAsync(ct);
 
-        if (material == null)
-            return NotFound();
-
-        var blob = _container.GetBlobClient(
-            material.FileStorageKey);
-
         try
         {
-            var download = await blob.DownloadStreamingAsync(
-                cancellationToken: ct);
+            var stream = await MaterialService.OpenDownloadAsync(material?.FileStorageKey, OpenBlobAsync, ct);
+            if (stream is null)
+                return NotFound();
 
-            return File(
-                download.Value.Content,
-                "application/pdf",
-                material.FileName);
+            return File(stream, "application/pdf", material!.FileName);
         }
         catch (RequestFailedException ex) when (ex.Status == 404)
         {
@@ -264,20 +256,19 @@ public class MaterialsController : ControllerBase
             .Select(m => m.CoverStorageKey)
             .SingleOrDefaultAsync(ct);
 
-        if (string.IsNullOrEmpty(storageKey))
-            return NotFound();
-
         try
         {
-            var download = await _container.GetBlobClient(storageKey)
-                .DownloadStreamingAsync(cancellationToken: ct);
-            var contentType = storageKey.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+            var stream = await MaterialService.OpenDownloadAsync(storageKey, OpenBlobAsync, ct);
+            if (stream is null)
+                return NotFound();
+
+            var contentType = storageKey!.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
                 ? "image/png"
                 : "image/jpeg";
 
             Response.Headers.CacheControl = "private, no-store";
             Response.Headers["X-Content-Type-Options"] = "nosniff";
-            return File(download.Value.Content, contentType);
+            return File(stream, contentType);
         }
         catch (RequestFailedException ex) when (ex.Status == 404)
         {
@@ -314,6 +305,12 @@ public class MaterialsController : ControllerBase
         await _blobCleanup.DeleteOrQueueAsync(_container, material.CoverStorageKey);
 
         return NoContent();
+    }
+
+    private async Task<Stream?> OpenBlobAsync(string storageKey, CancellationToken ct)
+    {
+        var download = await _container.GetBlobClient(storageKey).DownloadStreamingAsync(cancellationToken: ct);
+        return download.Value.Content;
     }
 
     private IQueryable<Material> GetAccessibleMaterials(Guid currentUserId) =>

@@ -78,6 +78,10 @@ public static class MaterialService
         return (extension, contentType, null);
     }
 
+    public static Task<Stream?> OpenDownloadAsync(
+        string? storageKey, Func<string, CancellationToken, Task<Stream?>> open, CancellationToken ct) =>
+        string.IsNullOrEmpty(storageKey) ? Task.FromResult<Stream?>(null) : open(storageKey, ct);
+
     public static async Task SaveWithCleanupAsync(Func<Task> save, Func<Task> cleanup)
     {
         try

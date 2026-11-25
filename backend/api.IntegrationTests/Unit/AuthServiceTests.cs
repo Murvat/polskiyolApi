@@ -263,22 +263,22 @@ public sealed class AuthServiceTests
 
         public void ClearTracking() => TrackingResets++;
     }
-
-    private sealed class FakeTransaction(Action commit, Action? rollback = null) : IDbContextTransaction
-    {
-        private bool _committed;
-        public Guid TransactionId { get; } = Guid.NewGuid();
-        public void Commit() { commit(); _committed = true; }
-        public Task CommitAsync(CancellationToken ct = default) { Commit(); return Task.CompletedTask; }
-        public void Rollback() => rollback?.Invoke();
-        public Task RollbackAsync(CancellationToken ct = default) { Rollback(); return Task.CompletedTask; }
-        public void Dispose() { if (!_committed) Rollback(); }
-        public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
-    }
 }
 
 internal sealed class ManualClock(DateTimeOffset value) : TimeProvider
 {
     public DateTimeOffset UtcNow { get; set; } = value;
     public override DateTimeOffset GetUtcNow() => UtcNow;
+}
+
+internal sealed class FakeTransaction(Action commit, Action? rollback = null) : IDbContextTransaction
+{
+    private bool _committed;
+    public Guid TransactionId { get; } = Guid.NewGuid();
+    public void Commit() { commit(); _committed = true; }
+    public Task CommitAsync(CancellationToken ct = default) { Commit(); return Task.CompletedTask; }
+    public void Rollback() => rollback?.Invoke();
+    public Task RollbackAsync(CancellationToken ct = default) { Rollback(); return Task.CompletedTask; }
+    public void Dispose() { if (!_committed) Rollback(); }
+    public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
 }
