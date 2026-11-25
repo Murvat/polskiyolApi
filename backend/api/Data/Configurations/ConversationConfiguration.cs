@@ -13,7 +13,7 @@ public class ConversationConfiguration : IEntityTypeConfiguration<Conversation>
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne(c => c.Teacher)
-            .WithMany()
+            .WithMany(t => t.Conversations)
             .HasForeignKey(c => c.TeacherId)
             .OnDelete(DeleteBehavior.Restrict);
     }
