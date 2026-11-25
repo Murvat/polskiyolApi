@@ -22,6 +22,13 @@ public class PaymentAddRequest : IValidatableObject
     public IEnumerable<ValidationResult> Validate(
         ValidationContext validationContext)
     {
+        if (decimal.Round(ExpectedAmount, 2) != ExpectedAmount)
+        {
+            yield return new ValidationResult(
+                "Amount must have at most two decimal places.",
+                new[] { nameof(ExpectedAmount) });
+        }
+
         if (DueDate == default)
         {
             yield return new ValidationResult(

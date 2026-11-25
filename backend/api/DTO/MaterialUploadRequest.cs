@@ -4,10 +4,13 @@ using Microsoft.AspNetCore.Http;
 
 public class MaterialUploadRequest : IValidatableObject
 {
-    [Required]
-    public IFormFile? File { get; set; }
+    private const long MaxFileBytes = 10 * 1024 * 1024;
+    internal const long MaxRequestBytes = MaxFileBytes + 1024 * 1024;
 
-    [StringLength(2000)]
+    [Required]
+    public IFormFile File { get; set; } = null!;
+
+    [StringLength(1000)]
     public string? Description { get; set; }
 
     public IEnumerable<ValidationResult> Validate(
@@ -23,7 +26,7 @@ public class MaterialUploadRequest : IValidatableObject
                 new[] { nameof(File) });
         }
 
-        if (File.Length > 10 * 1024 * 1024)
+        if (File.Length > MaxFileBytes)
         {
             yield return new ValidationResult(
                 "The file cannot exceed 10 MB.",

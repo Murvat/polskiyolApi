@@ -7,7 +7,7 @@ public class FeedPostAddRequest
     public string Title { get; set; } = string.Empty;
 
     [Required]
-    [StringLength(5000)]
+    [StringLength(4000)]
     public string Content { get; set; } = string.Empty;
 
     public static FeedPost ToFeedPost(
