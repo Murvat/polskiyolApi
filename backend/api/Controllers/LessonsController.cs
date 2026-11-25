@@ -1,3 +1,4 @@
+using PolskiYol.Data;
 using PolskiYol.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -9,11 +10,11 @@ using System.Security.Claims;
 [Route("api/lessons")]
 public class LessonsController : ControllerBase
 {
-    private readonly AppDbContext _context;
+    private readonly IApiData _data;
 
-    public LessonsController(AppDbContext context)
+    public LessonsController(IApiData data)
     {
-        _context = context;
+        _data = data;
     }
 
     [HttpGet]
@@ -68,8 +69,7 @@ public class LessonsController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        var teacher = await _context.Teachers
-            .AsNoTracking()
+        var teacher = await _data.Query<Teacher>()
             .SingleOrDefaultAsync(t => t.UserId == currentUserId,
                 cancellationToken);
 
@@ -81,7 +81,7 @@ public class LessonsController : ControllerBase
 
         var studentIds = lesson.StudentIds.Distinct().ToList();
 
-        var students = await LessonService.EligibleStudents(_context.Students.AsTracking(), studentIds, teacher.Id)
+        var students = await LessonService.EligibleStudents(_data.Query<Student>(track: true), studentIds, teacher.Id)
             .ToListAsync(cancellationToken);
 
         if (students.Count != studentIds.Count)
@@ -92,8 +92,8 @@ public class LessonsController : ControllerBase
 
         newLesson.Students = students;
 
-        _context.Lessons.Add(newLesson);
-        await _context.SaveChangesAsync(cancellationToken);
+        _data.Add(newLesson);
+        await _data.SaveChangesAsync(cancellationToken);
 
         return CreatedAtAction(
             nameof(GetLesson),
@@ -102,5 +102,5 @@ public class LessonsController : ControllerBase
     }
 
     private IQueryable<Lesson> GetAccessibleLessons(Guid currentUserId) =>
-        LessonService.GetAccessibleLessons(currentUserId, User, _context.Lessons.AsNoTracking());
+        LessonService.GetAccessibleLessons(currentUserId, User, _data.Query<Lesson>());
 }

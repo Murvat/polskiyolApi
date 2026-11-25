@@ -1,3 +1,4 @@
+using PolskiYol.Data;
 using PolskiYol.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
@@ -13,11 +14,11 @@ public class PaymentsController : ControllerBase
     private const string MonthlyPaymentIndex = "IX_Payments_StudentId_Year_Month";
     private const string DuplicatePaymentMessage = "Payment for this month already exists.";
 
-    private readonly AppDbContext _context;
+    private readonly IApiData _data;
 
-    public PaymentsController(AppDbContext context)
+    public PaymentsController(IApiData data)
     {
-        _context = context;
+        _data = data;
     }
 
     // GET /api/payments?year=2026&month=10
@@ -158,16 +159,14 @@ public class PaymentsController : ControllerBase
         if (request.DueDate == default)
             return BadRequest("A valid due date is required.");
 
-        var teacher = await _context.Teachers
-            .AsNoTracking()
+        var teacher = await _data.Query<Teacher>()
             .SingleOrDefaultAsync(
                 t => t.UserId == currentUserId, ct);
 
         if (teacher is null)
             return Forbid();
 
-        var student = await _context.Students
-            .AsTracking()
+        var student = await _data.Query<Student>(track: true)
             .SingleOrDefaultAsync(s =>
                 s.Id == request.StudentId &&
                 s.TeacherId == teacher.Id, ct);
@@ -175,7 +174,7 @@ public class PaymentsController : ControllerBase
         if (student is null)
             return NotFound();
 
-        var exists = await PaymentService.ForMonth(_context.Payments, student.Id, request.Year, request.Month).AnyAsync(ct);
+        var exists = await PaymentService.ForMonth(_data.Query<Payment>(), student.Id, request.Year, request.Month).AnyAsync(ct);
 
         if (exists)
             return Conflict(DuplicatePaymentMessage);
@@ -192,11 +191,11 @@ public class PaymentsController : ControllerBase
             CreatedAt = DateTime.UtcNow
         };
 
-        _context.Payments.Add(payment);
+        _data.Add(payment);
 
         try
         {
-            await _context.SaveChangesAsync(ct);
+            await _data.SaveChangesAsync(ct);
         }
         catch (DbUpdateException ex) when (
             ex.InnerException is SqlException { Number: 2601 } sqlException &&
@@ -223,8 +222,7 @@ public class PaymentsController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        var payment = await _context.Payments
-            .AsTracking()
+        var payment = await _data.Query<Payment>(track: true)
             .SingleOrDefaultAsync(p =>
                 p.Id == id &&
                 p.Teacher.UserId == currentUserId && p.Student.TeacherId == p.TeacherId, ct);
@@ -233,13 +231,13 @@ public class PaymentsController : ControllerBase
             return NotFound();
 
         if (PaymentService.MarkPaid(payment, DateTime.UtcNow))
-            await _context.SaveChangesAsync(ct);
+            await _data.SaveChangesAsync(ct);
 
         return NoContent();
     }
 
     private IQueryable<Payment> GetAccessiblePayments(Guid currentUserId) =>
-        PaymentService.GetAccessiblePayments(currentUserId, User, _context.Payments.AsNoTracking());
+        PaymentService.GetAccessiblePayments(currentUserId, User, _data.Query<Payment>());
 
     private IQueryable<Payment> PeriodQuery(
         Guid currentUserId,

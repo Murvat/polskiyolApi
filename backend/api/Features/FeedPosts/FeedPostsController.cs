@@ -1,3 +1,4 @@
+using PolskiYol.Data;
 using System.ComponentModel.DataAnnotations;
 using PolskiYol.Features;
 using Microsoft.AspNetCore.Mvc;
@@ -10,11 +11,11 @@ using System.Security.Claims;
 [Route("api/feed-posts")]
 public class FeedPostsController : ControllerBase
 {
-    private readonly AppDbContext _context;
+    private readonly IApiData _data;
 
-    public FeedPostsController(AppDbContext context)
+    public FeedPostsController(IApiData data)
     {
-        _context = context;
+        _data = data;
     }
 
     // GET /api/feed-posts
@@ -78,8 +79,7 @@ public class FeedPostsController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        var teacher = await _context.Teachers
-            .AsNoTracking()
+        var teacher = await _data.Query<Teacher>()
             .SingleOrDefaultAsync(
                 t => t.UserId == currentUserId,
                 cancellationToken);
@@ -89,9 +89,9 @@ public class FeedPostsController : ControllerBase
 
         var post = FeedPostService.CreatePost(request, teacher.Id, DateTime.UtcNow);
 
-        _context.FeedPosts.Add(post);
+        _data.Add(post);
 
-        await _context.SaveChangesAsync(cancellationToken);
+        await _data.SaveChangesAsync(cancellationToken);
 
         return CreatedAtAction(
             nameof(GetPost),
@@ -111,19 +111,19 @@ public class FeedPostsController : ControllerBase
         if (!Guid.TryParse(userId, out Guid currentUserId))
             return Unauthorized();
 
-        var post = await FeedPostService.GetAccessiblePosts(currentUserId, User, _context.FeedPosts.AsTracking())
+        var post = await FeedPostService.GetAccessiblePosts(currentUserId, User, _data.Query<FeedPost>(track: true))
             .SingleOrDefaultAsync(p => p.Id == id, cancellationToken);
 
         if (post is null)
             return NotFound();
 
-        _context.FeedPosts.Remove(post);
+        _data.Remove(post);
 
-        await _context.SaveChangesAsync(cancellationToken);
+        await _data.SaveChangesAsync(cancellationToken);
 
         return NoContent();
     }
 
     private IQueryable<FeedPost> GetAccessiblePosts(Guid currentUserId) =>
-        FeedPostService.GetAccessiblePosts(currentUserId, User, _context.FeedPosts.AsNoTracking());
+        FeedPostService.GetAccessiblePosts(currentUserId, User, _data.Query<FeedPost>());
 }

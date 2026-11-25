@@ -1,3 +1,4 @@
+using PolskiYol.Data;
 using System.ComponentModel.DataAnnotations;
 using PolskiYol.Features;
 using Microsoft.AspNetCore.Mvc;
@@ -10,11 +11,11 @@ using System.Security.Claims;
 [Route("api/conversations/{conversationId:int}/messages")]
 public class MessagesController : ControllerBase
 {
-    private readonly AppDbContext _context;
+    private readonly IApiData _data;
 
-    public MessagesController(AppDbContext context)
+    public MessagesController(IApiData data)
     {
-        _context = context;
+        _data = data;
     }
 
     // GET /api/conversations/1/messages
@@ -36,8 +37,7 @@ public class MessagesController : ControllerBase
         if (!await conversations.AnyAsync(ct))
             return NotFound();
 
-        var messages = await _context.Messages
-            .AsNoTracking()
+        var messages = await _data.Query<Message>()
             .Where(m =>
                 m.ConversationId == conversationId &&
                 (!beforeId.HasValue || m.Id < beforeId.Value) &&
@@ -74,8 +74,7 @@ public class MessagesController : ControllerBase
 
         var conversations = GetAccessibleConversations(currentUserId);
 
-        var message = await _context.Messages
-            .AsNoTracking()
+        var message = await _data.Query<Message>()
             .SingleOrDefaultAsync(m =>
                 m.Id == id &&
                 m.ConversationId == conversationId &&
@@ -112,9 +111,9 @@ public class MessagesController : ControllerBase
         if (message is null)
             return BadRequest("Message cannot be empty.");
 
-        _context.Messages.Add(message);
+        _data.Add(message);
 
-        await _context.SaveChangesAsync(ct);
+        await _data.SaveChangesAsync(ct);
 
         return CreatedAtAction(
             nameof(GetMessage),
@@ -127,5 +126,5 @@ public class MessagesController : ControllerBase
     }
 
     private IQueryable<Conversation> GetAccessibleConversations(Guid currentUserId) =>
-        MessagingService.GetAccessibleConversations(currentUserId, User, _context.Conversations.AsNoTracking());
+        MessagingService.GetAccessibleConversations(currentUserId, User, _data.Query<Conversation>());
 }

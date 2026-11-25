@@ -13,14 +13,9 @@ using Microsoft.AspNetCore.RateLimiting;
 using PolskiYol.Features.Materials;
 using PolskiYol.Configuration;
 using PolskiYol.Services;
+using PolskiYol.Data;
 
 var builder = WebApplication.CreateBuilder(args);
-
-// Database connection string
-string connectionString =
-    builder.Configuration.GetConnectionString("DefaultConnection")
-    ?? throw new InvalidOperationException(
-        "Connection string 'DefaultConnection' was not found.");
 
 // Controllers and OpenAPI
 builder.Services.AddOpenApi();
@@ -52,10 +47,15 @@ builder.Services.AddAuthorization(options =>
 });
 
 // Entity Framework Core
-builder.Services.AddDbContext<AppDbContext>(options =>
+builder.Services.AddDbContext<AppDbContext>((services, options) =>
 {
+    var connectionString = services.GetRequiredService<IConfiguration>().GetConnectionString("DefaultConnection")
+        ?? throw new InvalidOperationException("Connection string 'DefaultConnection' was not found.");
+
     options.UseSqlServer(connectionString);
 });
+builder.Services.AddScoped<IApiData, ApiData>();
+builder.Services.AddScoped<IIdentityInitializer, IdentityInitializer>();
 builder.Services.AddSingleton<IJwtService, JwtService>();
 // ASP.NET Core Identity
 builder.Services
@@ -86,6 +86,7 @@ builder.Services.AddSingleton(sp =>
 });
 
 builder.Services.AddSingleton<MaterialBlobCleanup>();
+builder.Services.AddSingleton<IMaterialBlobStore, MaterialBlobStore>();
 builder.Services.AddHostedService<MaterialBlobCleanup>(sp => sp.GetRequiredService<MaterialBlobCleanup>());
 
 // JWT configuration and validation
@@ -205,10 +206,7 @@ var app = builder.Build();
 // Seed Identity roles
 using (var scope = app.Services.CreateScope())
 {
-    var roleManager = scope.ServiceProvider
-        .GetRequiredService<RoleManager<IdentityRole<Guid>>>();
-
-    await IdentitySeeder.SeedRolesAsync(roleManager);
+    await scope.ServiceProvider.GetRequiredService<IIdentityInitializer>().InitializeAsync();
 }
 
 // Development environment

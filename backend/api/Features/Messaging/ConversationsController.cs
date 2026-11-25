@@ -1,3 +1,4 @@
+using PolskiYol.Data;
 using PolskiYol.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -9,11 +10,11 @@ using System.Security.Claims;
 [Route("api/conversations")]
 public class ConversationsController : ControllerBase
 {
-    private readonly AppDbContext _context;
+    private readonly IApiData _data;
 
-    public ConversationsController(AppDbContext context)
+    public ConversationsController(IApiData data)
     {
-        _context = context;
+        _data = data;
     }
 
     // GET /api/conversations
@@ -70,5 +71,5 @@ public class ConversationsController : ControllerBase
     }
 
     private IQueryable<Conversation> GetAccessibleConversations(Guid currentUserId) =>
-        MessagingService.GetAccessibleConversations(currentUserId, User, _context.Conversations.AsNoTracking());
+        MessagingService.GetAccessibleConversations(currentUserId, User, _data.Query<Conversation>());
 }

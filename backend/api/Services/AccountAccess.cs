@@ -5,6 +5,7 @@ namespace PolskiYol.Services;
 public interface IAccountAccess
 {
     Task<ApplicationUser?> FindAsync(string email);
+    Task<ApplicationUser?> FindByIdAsync(string id);
     Task<SignInResult> CheckPasswordAsync(ApplicationUser user, string password);
     Task<bool> CanRefreshAsync(ApplicationUser user);
     Task<string> GetSecurityStampAsync(ApplicationUser user);
@@ -15,6 +16,7 @@ public sealed class AccountAccess(
     UserManager<ApplicationUser> users, SignInManager<ApplicationUser> signIn) : IAccountAccess
 {
     public Task<ApplicationUser?> FindAsync(string email) => users.FindByEmailAsync(email);
+    public Task<ApplicationUser?> FindByIdAsync(string id) => users.FindByIdAsync(id);
 
     public async Task<SignInResult> CheckPasswordAsync(ApplicationUser user, string password)
     {
