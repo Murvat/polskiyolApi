@@ -101,14 +101,9 @@ namespace api.Migrations
                     b.Property<int>("TeacherId")
                         .HasColumnType("int");
 
-                    b.Property<int?>("TeacherId1")
-                        .HasColumnType("int");
-
                     b.HasKey("Id");
 
                     b.HasIndex("TeacherId");
-
-                    b.HasIndex("TeacherId1");
 
                     b.HasIndex("StudentId", "TeacherId")
                         .IsUnique();
@@ -580,14 +575,10 @@ namespace api.Migrations
                         .IsRequired();
 
                     b.HasOne("Teacher", "Teacher")
-                        .WithMany()
+                        .WithMany("Conversations")
                         .HasForeignKey("TeacherId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-
-                    b.HasOne("Teacher", null)
-                        .WithMany("Conversations")
-                        .HasForeignKey("TeacherId1");
 
                     b.Navigation("Student");
 

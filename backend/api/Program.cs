@@ -194,6 +194,16 @@ if (app.Environment.IsDevelopment())
 }
 
 // HTTP request pipeline
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(context => Results.Problem(
+        statusCode: StatusCodes.Status500InternalServerError,
+        title: "An unexpected error occurred.",
+        extensions: new Dictionary<string, object?>
+        {
+            ["traceId"] = context.TraceIdentifier
+        }).ExecuteAsync(context));
+});
 app.UseHttpsRedirection();
 app.UseStatusCodePages();
 app.UseAuthentication();
@@ -202,3 +212,5 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+public partial class Program { }

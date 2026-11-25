@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
@@ -8,6 +9,9 @@ using System.Security.Claims;
 [Route("api/payments")]
 public class PaymentsController : ControllerBase
 {
+    private const string MonthlyPaymentIndex = "IX_Payments_StudentId_Year_Month";
+    private const string DuplicatePaymentMessage = "Payment for this month already exists.";
+
     private readonly AppDbContext _context;
 
     public PaymentsController(AppDbContext context)
@@ -176,7 +180,7 @@ public class PaymentsController : ControllerBase
             p.Month == request.Month, ct);
 
         if (exists)
-            return Conflict("Payment for this month already exists.");
+            return Conflict(DuplicatePaymentMessage);
 
         var payment = new Payment
         {
@@ -192,7 +196,16 @@ public class PaymentsController : ControllerBase
 
         _context.Payments.Add(payment);
 
-        await _context.SaveChangesAsync(ct);
+        try
+        {
+            await _context.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (
+            ex.InnerException is SqlException { Number: 2601 } sqlException &&
+            sqlException.Message.Contains($"'{MonthlyPaymentIndex}'", StringComparison.Ordinal))
+        {
+            return Conflict(DuplicatePaymentMessage);
+        }
 
         return CreatedAtAction(
             nameof(GetPayment),

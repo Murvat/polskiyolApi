@@ -11,7 +11,6 @@ using Microsoft.EntityFrameworkCore;
 [Route("api/materials")]
 public class MaterialsController : ControllerBase
 {
-    private const long MaxPdfBytes = 50 * 1024 * 1024;
     private const long MaxCoverBytes = 5 * 1024 * 1024;
 
     private readonly AppDbContext _context;
@@ -70,8 +69,8 @@ public class MaterialsController : ControllerBase
     [Authorize(Roles = "Teacher")]
     [HttpPost]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(60 * 1024 * 1024)]
-    [RequestFormLimits(MultipartBodyLengthLimit = 60 * 1024 * 1024)]
+    [RequestSizeLimit(MaterialUploadRequest.MaxRequestBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = MaterialUploadRequest.MaxRequestBytes)]
     public async Task<ActionResult<MaterialResponse>> UploadMaterial(
         [FromForm] MaterialUploadRequest request,
         CancellationToken ct)
@@ -89,12 +88,6 @@ public class MaterialsController : ControllerBase
             return Forbid();
 
         var file = request.File;
-
-        if (file == null || file.Length == 0)
-            return BadRequest("A PDF file is required.");
-
-        if (file.Length > MaxPdfBytes)
-            return BadRequest("PDF exceeds the 50 MB limit.");
 
         var fileName = Path.GetFileName(
             file.FileName.Replace('\\', '/'));

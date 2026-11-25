@@ -1,0 +1,54 @@
+name: API integration
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, ci/sql-server-integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sql-server-integration:
+    name: SQL Server integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_SA_PASSWORD: 'Integration-Sql_2026!'
+        ports:
+          - 1433/tcp
+    env:
+      ConnectionStrings__DefaultConnection: Server=127.0.0.1,${{ job.services.sqlserver.ports[1433] }};Database=PolskiYolIntegration;User ID=sa;Password=Integration-Sql_2026!;TrustServerCertificate=True;Connect Timeout=5
+      Jwt__Issuer: integration-tests
+      Jwt__Audience: integration-tests
+      Jwt__AccessTokenExpirationMinutes: '5'
+      Jwt__RefreshTokenExpirationDays: '1'
+      Jwt__AbsoluteSessionExpirationDays: '2'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Wait for SQL Server
+        env:
+          SQL_CONTAINER: ${{ job.services.sqlserver.id }}
+          SQLCMDPASSWORD: 'Integration-Sql_2026!'
+        run: |
+          for attempt in {1..30}; do
+            if docker exec -e SQLCMDPASSWORD "$SQL_CONTAINER" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -l 2 -b -Q 'SELECT 1'; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs "$SQL_CONTAINER"
+          exit 1
+      - name: Run integration tests
+        run: |
+          export Jwt__SigningKey="$(openssl rand -base64 32)"
+          dotnet test backend/api.IntegrationTests/api.IntegrationTests.csproj --configuration Release
